@@ -1,0 +1,86 @@
+device: "cuda"
+sampler: "heun"
+num_steps: 20
+output_path: ""
+
+preprocessing:
+  incident_energy:
+    - [Log, {alpha: 0.5}]
+    - [Affine, {scale: ["data", "log_incidentE_std"], shift: ["data", "log_incidentE_mean"]}]
+  incident_direction:
+    - [Identity]
+
+    
+
+model:
+  logarithmic_point_energy: true
+  cond_dim: 4
+  cond_features: ["incident_energy", "incident_direction"]
+  feature_dim: 4
+  rho: 7.0
+  s_churn: 0.0
+  s_noise: 1.0
+  sigma_min: 0.002
+  sigma_max: 80.0
+
+data:
+  dataset_path: "/data/dust/group/ilc/sft-ml/datasets/sim-E1261AT600AP180-180/sim-E1261AT600AP180-180_file_{}.slcio.hdf5"
+  test_range_start: 0
+  test_range_end: 10
+  val_range_start: 10
+  val_range_end: 20
+  train_range_start: 20
+  train_range_end: 90
+
+  format: "padded"
+  roll_axis: true
+  padding: "front"
+  points_key: "events"
+  incident_pdg_key: none
+  incident_energy_key: "energy"
+  incident_direction_key: "p_norm_local"
+
+  Xcut: -250
+  Xcut: 250
+  Ycut: -250
+  Ycut: 250
+  Xcut_in_detector: -250
+  Xcut_in_detector: 250
+  Zcut_in_detector: -250
+  Zcut_in_detector: 250
+
+
+  Xmean: -0.0074305227
+  Xstd: 21.608465
+  Ymean: -0.21205868
+  Ystd: 22.748442
+  Zmean: 12.359252
+  Zstd: 5.305082
+
+  log_Emean: -8.431133
+  log_Estd: 1.251827
+
+  log_incidentE_mean: 3.87
+  log_incidentE_std: 0.934
+
+  orientation: "hdf5:xyz==local:xyz"
+  cell_thickness: 1.0
+  cell_size:  5.0883331298828125
+  layer_bottom_pos: [ 0.,  1.,  2.,  3.,  4.,  5.,  6.,  7.,  8.,  9., 10., 11., 12., 13., 14., 15., 16., 17., 18., 19., 20., 21., 22., 23., 24., 25., 26., 27., 28., 29.]
+  divisions_per_cell: 5
+
+  gun_xyz_pos: [0.0, 1811., 0.0]
+  gun_xyz_pos_in_detector: [0.0, 1811., -50.0]
+
+detector:
+  Ymin: 1811
+  orientation: "hdf5:xyz==global:zxy"
+  cell_thickness: 0.5250244140625
+  cell_size:  5.0883331298828125
+  layer_bottom_pos: [1811.34020996, 1814.46508789, 1823.81005859, 1826.93505859, 1836.2800293, 1839.4050293, 1848.75, 1851.875, 1861.2199707 , 1864.3449707, 1873.68994141, 1876.81494141, 1886.16003418, 1889.28503418, 1898.63000488, 1901.75500488, 1911.09997559, 1914.22497559, 1923.56994629, 1926.69494629, 1938.14001465, 1943.36499023, 1954.81005859, 1960.03503418, 1971.47998047, 1976.70495605, 1988.15002441, 1993.375, 2004.81994629, 2010.04504395]
+
+training:
+  sigma_data: 0.5
+  retain_quantized: false
+  diffusion_loss: "l2"
+  
