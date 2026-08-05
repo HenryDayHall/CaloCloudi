@@ -10,14 +10,16 @@ preprocessing:
         components:
           - - [Log, {alpha: 0.5}]
             - - Affine
-              - scale: ["data", "log_incidentE_std"]
-                shift: ["data", "log_incidentE_mean"]
+              - inverse_scale: ["data", "log_incidentE_std"]
+                neg_shift: ["data", "log_incidentE_mean"]
           - null
   features:
     - - Partial
-      - split_indices: [3]
+      - split_indices: [1, 2, 3]
         components:
-          - null
+          - - [Affine, {inverse_scale: ["data", "Xstd"], neg_shift: ["data", "Xmean"]}]
+          - - [Affine, {inverse_scale: ["data", "Ystd"], neg_shift: ["data", "Ymean"]}]
+          - - [Affine, {inverse_scale: ["data", "Zstd"], neg_shift: ["data", "Zmean"]}]
           - - [Log, {alpha: 0.5}]
             - - Affine
               - scale: ["data", "log_Estd"]
@@ -43,7 +45,7 @@ data:
   train_range_start: 20
   train_range_end: 90
 
-  format: "padded"
+  format: "padded_unordered"
   roll_axis: true
   padding: "front"
   points_key: "events"
@@ -91,7 +93,9 @@ detector:
   layer_bottom_pos: [1811.34020996, 1814.46508789, 1823.81005859, 1826.93505859, 1836.2800293, 1839.4050293, 1848.75, 1851.875, 1861.2199707 , 1864.3449707, 1873.68994141, 1876.81494141, 1886.16003418, 1889.28503418, 1898.63000488, 1901.75500488, 1911.09997559, 1914.22497559, 1923.56994629, 1926.69494629, 1938.14001465, 1943.36499023, 1954.81005859, 1960.03503418, 1971.47998047, 1976.70495605, 1988.15002441, 1993.375, 2004.81994629, 2010.04504395]
 
 training:
+  batch_size: 32
+  max_points_per_event: 6000
   sigma_data: 0.5
-  retain_quantized: false
+  retain_quantized: true  # this dataset is fuzzed on disk
   diffusion_loss: "l2"
   

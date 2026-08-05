@@ -3,20 +3,19 @@ import warnings
 import numpy as np
 import h5py
 
-from ..utils.detector_map import floors_ceilings
+from ..detector_map import floors_ceilings
 from .read_write import get_files, events_to_local
+from .transforms import preprocessing
 
 
 class PointCloudDataset(Dataset):
     # these can be accessed without instantiating the class
     energy_scale = 1000  # MeV to GeV
+
     def __init__(
         self,
-        file_path,
         configs,
-        bs=32,
-        max_ds_seq_len=6000,
-        n_files=0,
+        dataset_part="train",
     ):
         """
         Base class for point cloud open_files.
@@ -24,55 +23,36 @@ class PointCloudDataset(Dataset):
 
         Parameters
         ----------
-        file_path : str
-            Path to the HDF5 file containing the dataset.
-            If n_files is > 0, then the file_path should
-            contain one or more "{}" to be formatted with
-            the file number.
         configs: dict
             config...
-        bs : int, optional
-            Batch size, number of events returned in each
-            iteration.
-            Default is 32.
-        max_ds_seq_len : int, optional
-            Maximium number of points/hits in each event.
-            Data will be trimmed to this length if longer on
-            the disk.
-            Default is 6000.
-        n_files : int, optional
-            If this is > 0, then the file_path should
-            contain one or more "{}" to be formatted with
-            the file number.
-            If it's 0, then the file_path should be a
-            single file.
         """
         self.configs = configs
-        self.open_files = self._open_data_files(file_path, n_files)
+        file_path = self.configs["data"]["dataset_path"]
+        self.keys_to_include = {
+            name: self.configs["data"].get(f"{name}_key", name)
+            for name in self.configs["model"]["cond_features"] + ["points"]
+        }
+        self.open_files = self._open_data_files(file_path, dataset_part)
 
         self._prior_event_axes = self._get_prior_event_axes()
 
-        self.max_ds_seq_len = max_ds_seq_len
+        self.max_ds_seq_len = configs["training"]["max_points_per_event"]
         self.index_list = self._make_index_list()
         self.front_padded = self._is_front_padded()
-        self.bs = bs
+        self.bs = configs["training"]["batch_size"]
 
-        self.retain_quantized = self.config["training"]["retain_quantized"]
+        self.retain_quantized = self.configs["training"]["retain_quantized"]
         self.offset = (
-            self.config["data"]["cell_size"]
-            / self.config["data"]["divisions_per_cell"]
+            self.configs["data"]["cell_size"]
+            / self.configs["data"]["divisions_per_cell"]
         )
 
-        self.keys_to_include = {
-                name: self.configs["data"][f"{name}_key"]
-                for name in 
-                self.configs["model"]["cond_features"] + "points"]
-        }
-
+        self.conditioning_transform = preprocessing(self.configs, "conditioning")
+        self.features_transform = preprocessing(self.configs, "features")
         # avoid repeat calculation
         self._len = len(self.index_list)
 
-    def _open_data_files(self, file_path, n_files):
+    def _open_data_files(self, file_path, dataset_part):
         """
         Open all the data files, and return them.
         We don't bother closing them, because they are
@@ -88,19 +68,20 @@ class PointCloudDataset(Dataset):
             If n_files is > 0, then the file_path should
             contain one or more "{}" to be formatted with
             the file number.
-        n_files : int
-            If this is > 0, then the file_path should
-            contain one or more "{}" to be formatted with
-            the file number.
-            If it's 0, then the file_path should be a
-            single file.
+        dataset_part : str
+            Either "train", "val", or "test"
 
         Returns
         -------
         list
             List of h5py.File objects.
         """
-        all_files = [h5py.File(path, "r") for path in get_files(file_path, n_files)]
+        file_range_start = self.configs["data"][f"{dataset_part}_range_start"]
+        file_range_end = self.configs["data"][f"{dataset_part}_range_end"]
+        all_files = [
+            h5py.File(path, "r")
+            for path in get_files(file_path, file_range_start, file_range_end)
+        ]
         if not all_files:
             raise FileNotFoundError(f"No files found at {file_path}")
         return all_files
@@ -220,35 +201,8 @@ class PointCloudDataset(Dataset):
             done[mask] = True
         assert done.all()
 
-    def normalize_xyze(self, event):
-        # correct for the sim-E... datasets
-        Xmean, Ymean, Zmean = (
-            self.configs["data"]["Xmean"],
-            self.configs["data"]["Ymean"],
-            self.configs["data"]["Zmean"],
-        )
-        Xstd, Ystd, Zstd = (
-            self.configs["data"]["Xstd"],
-            self.configs["data"]["Ystd"],
-            self.configs["data"]["Zstd"],
-        )
-
-        if self.configs["model"]["logarithmic_point_energy"]:
-            Emean, Estd = (
-                self.configs["data"]["log_Emean"],
-                self.configs["data"]["log_Estd"],
-            )
-            # TODO consider setting padding to nan, so that it gets caught in the mask
-            event[..., 3] = (
-                (np.log(event[..., 3] + 1e-12) - Emean) / Estd / 2
-            )  # energy transformation
-
-        event[..., 0] = (event[..., 0] - Xmean) / Xstd / 2  # x coordinate normalization
-        event[..., 1] = (event[..., 1] - Ymean) / Ystd / 2  # y coordinate normalization
-        event[..., 2] = (event[..., 2] - Zmean) / Zstd / 2  # z coordinate normalization
-
     def _event_processing(self, event):
-        if self._roll_axis:
+        if self.configs["data"]["roll_axis"]:
             event = np.moveaxis(event, -1, -2)
 
         # Ensure the shower runs along the z axis
@@ -266,18 +220,12 @@ class PointCloudDataset(Dataset):
             self._fuzz_parallel(event)
             self._fuzz_perpendicular(event)
 
-        self.normalize_xyze(event)
-
         return event
 
     def __getitem__(self, idx):
         idxs = self._choose_idxs(idx)
         batch = {}
-        # TODO do I need a way to apply rescales to the incident energy here?
         for name_in_batch, name_on_disk in self.keys_to_include.items():
-            if name_in_batch == "points":
-                continue
-
             padding = self._prior_event_axes[name_in_batch]
             data = np.array(
                 [
@@ -286,18 +234,35 @@ class PointCloudDataset(Dataset):
                 ]
             )
 
-            if name_in_batch == "event":
+            if name_in_batch == "points":
                 data = self._event_processing(data)
 
             if len(data.shape) == 1:
                 data = data[..., np.newaxis]
             batch[name_in_batch] = data
 
-        # special case for points as it's already been processed
-        if "points" in self.keys_to_include:
-            batch["points"] = self.index_list[idxs, 0, np.newaxis]
+        # expose the number of points per event
+        batch["n_points"] = self.index_list[idxs, 0, np.newaxis]
 
         return batch
 
     def __len__(self):
         return self._len
+
+
+class PointCloudDatasetUnordered(PointCloudDataset):
+    def _choose_idxs(self, idx):
+        rng = np.random.default_rng(seed=idx)
+        bs = min(self._len, self.bs)
+        idxs = rng.choice(self._len, bs, replace=False)
+        idxs.sort()
+        return idxs
+
+
+def from_configs(configs, dataset_part="train"):
+    if configs["data"]["format"] == "padded":
+        return PointCloudDataset(configs, dataset_part=dataset_part)
+    elif configs["data"]["format"] == "padded_unordered":
+        return PointCloudDatasetUnordered(configs, dataset_part=dataset_part)
+    else:
+        raise NotImplementedError

@@ -146,16 +146,26 @@ class LogIt(Transformation):
 
 
 class Affine(Transformation):
-    def __init__(self, scale: float = 1.0, shift: float = 0.0) -> None:
+    def __init__(
+        self,
+        scale: float = 1.0,
+        shift: float = 0.0,
+        inverse_scale: float = None,
+        neg_shift: float = None,
+    ) -> None:
         super().__init__()
+        if inverse_scale is not None:
+            scale = 1 / inverse_scale
+        if neg_shift is not None:
+            shift = -neg_shift
         self.a = scale
         self.b = shift
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.a * x + self.b
+        return self.a * (x + self.b)
 
     def inverse(self, x: torch.Tensor) -> torch.Tensor:
-        return (x - self.b) / self.a
+        return x / self.a - self.b
 
 
 class Clamp(Transformation):
