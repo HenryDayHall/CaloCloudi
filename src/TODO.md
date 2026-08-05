@@ -1,1 +1,6 @@
+- Check that the training is actually using the preprocessing
+- need to finish the transform to cells
+- need to make standard plots
+- need to get a validation step into the training
+- need to get the student model (distilled) training
 - other empty files

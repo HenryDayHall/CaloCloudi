@@ -121,7 +121,7 @@ def create_map(configs):
     return layers, offset
 
 
-def floors_ceilings(layer_bottom_pos, cell_thickness_global, percent_buffer=0.5):
+def floors_ceilings(layer_bottom_pos, cell_thickness, percent_buffer=0.5):
     """
     Find top and bottom coordinates for the layers in the detector.
 
@@ -129,7 +129,7 @@ def floors_ceilings(layer_bottom_pos, cell_thickness_global, percent_buffer=0.5)
     ----------
     layer_bottom_pos : np.array
         Array of the bottom positions of the layers.
-    cell_thickness_global : float
+    cell_thickness : float
         Thickness of the cells in the detector, in the radial direction
     percent_buffer : float
         Percentage beyond the thickness of the cell to include hits
@@ -145,12 +145,12 @@ def floors_ceilings(layer_bottom_pos, cell_thickness_global, percent_buffer=0.5)
         Array of the top positions of the layers.
     """
     # naive calculation of the layer floors and ceilings
-    layer_floors = layer_bottom_pos - percent_buffer * cell_thickness_global
-    layer_ceilings = layer_bottom_pos + (1 + percent_buffer) * cell_thickness_global
+    layer_floors = layer_bottom_pos - percent_buffer * cell_thickness
+    layer_ceilings = layer_bottom_pos + (1 + percent_buffer) * cell_thickness
     # Unless the cells are thicker than the layers, (which they shouldn't be)
     # the true ceiling for each layer is the bottom of the layer plus the thickness
     true_ceilings = np.minimum(
-        (layer_bottom_pos + cell_thickness_global)[:-1], layer_bottom_pos[1:]
+        (layer_bottom_pos + cell_thickness)[:-1], layer_bottom_pos[1:]
     )
     # we dont' want any extention to cross the midpoint between the true
     # ceiling and the bottom of the next layer
@@ -159,3 +159,28 @@ def floors_ceilings(layer_bottom_pos, cell_thickness_global, percent_buffer=0.5)
     layer_floors[1:] = np.maximum(layer_floors[1:], mid_points)
     layer_ceilings[:-1] = np.minimum(layer_ceilings[:-1], mid_points)
     return layer_floors, layer_ceilings
+
+
+def find_layers(config, points, coordinates="data"):
+    if coordinates == "data":
+        layer_bottom_pos = config["data"]["layer_bottom_pos"]
+        cell_thickness = config["data"]["cell_thickness"]
+        height = points[:, :, 2]
+    elif coordinates == "detector":
+        layer_bottom_pos = config["detector"]["layer_bottom_pos"]
+        cell_thickness = config["detector"]["cell_thickness"]
+        height = points[:, :, 1]
+
+    layer_floors, layer_ceilings = floors_ceilings(
+        layer_bottom_pos,
+        cell_thickness,
+        percent_buffer=0.5,
+    )
+    real_points = points[:, :, 3] > 0
+    point_layers = -np.ones(points.shape[:2], dtype=int)
+
+    for i, (floor, ceiling) in enumerate(zip(layer_floors, layer_ceilings)):
+        mask = (height >= floor) & (height < ceiling) & real_points
+        point_layers[mask] = i
+
+    return point_layers

@@ -1,6 +1,5 @@
-# in the public repo this is CaloClouds_2.py
 import torch
-from torch.nn import Module, ModuleList, functional
+from torch.nn import Module, ModuleList, functional, Linear
 import k_diffusion
 
 
@@ -30,31 +29,31 @@ class Diffusion(Module):
     It is conditioned on number of points and incident energy.
     """
 
-    def __init__(self, configs, distillation=False):
+    def __init__(self, config, distillation=False):
         """
         Constructor for the model, for both training and sampling.
 
         Parameters
         ----------
-        configs : dictionary
+        config : dictionary
         distillation : bool, optional
             If true, this model is disstilld from recent iterations of the
             primary model being trained.
 
         """
         super().__init__()
-        self.configs = configs
+        self.config = config
         self.distillation = distillation
-        device = configs["device"]
-        sigma_data = configs["training"]["sigma_data"]
+        device = config["device"]
+        sigma_data = config["training"]["sigma_data"]
 
-        net = PointwiseNet_kDiffusion(configs=configs)
+        net = PointwiseNet_kDiffusion(config=config)
         if not distillation:
             self.diffusion = Denoiser(
                 net,
                 sigma_data=sigma_data,
                 device=device,
-                diffusion_loss=configs["training"]["diffusion_loss"],
+                diffusion_loss=config["training"]["diffusion_loss"],
             )
         else:
             self.diffusion = Denoiser(
@@ -62,13 +61,17 @@ class Diffusion(Module):
                 sigma_data=sigma_data,
                 device=device,
                 distillation=True,
-                sigma_min=configs["model"]["sigma_min"],
+                sigma_min=config["model"]["sigma_min"],
             )
 
         self.kld = KLDloss()
 
     def get_loss(
-        self, x, noise, sigma, cond_feats, kl_weight, writer=None, it=None, kld_min=0.0
+        self,
+        x,
+        noise,
+        sigma,
+        cond_feats,
     ):
         """
         Calculate the loss of one or mode batches of data.
@@ -94,11 +97,9 @@ class Diffusion(Module):
             this creates a prior loss for the flow model.
 
         """
-        z = cond_feats
-
         data_mask = None
-        if not self.configs["model"]["logarithmic_point_energy"]:
-            # loss_diffusion = self.diffusion.get_loss(x, z)    # diffusion loss
+        if not self.config["model"]["logarithmic_point_energy"]:
+            # loss_diffusion = self.diffusion.get_loss(x, cond_feats)    # diffusion loss
             data_mask = (
                 x[..., 3] > 1e-5
             )  # anything with very small energy is considered padding
@@ -106,7 +107,7 @@ class Diffusion(Module):
             data_mask = torch.isfinite(x[..., 3])
 
         loss_diffusion = self.diffusion.loss(
-            x, noise, sigma, context=z, input_mask=data_mask
+            x, noise, sigma, context=cond_feats, input_mask=data_mask
         ).mean()  # diffusion loss
 
         # Total loss
@@ -114,55 +115,60 @@ class Diffusion(Module):
 
         return loss
 
-    def sample(self, cond_feats, num_points, config):
+    def sample(self, cond_feats, num_points):
         batch_size, _ = cond_feats.size()
         if batch_size == 0:
             return torch.zeros(
-                0, num_points, config["feature_dim"], device=cond_feats.device
+                0,
+                num_points,
+                self.config["model"]["feature_dim"],
+                device=cond_feats.device,
             )
 
-        # contect / latent space
-        z = cond_feats  # B, C
-
         x_T = (
-            torch.randn([z.size(0), num_points, config["feature_dim"]], device=z.device)
-            * config["model"]["sigma_max"]
+            torch.randn(
+                [cond_feats.size(0), num_points, self.config["model"]["feature_dim"]],
+                device=cond_feats.device,
+            )
+            * self.config["model"]["sigma_max"]
         )
 
         if not self.distillation:
             sigmas = k_diffusion.sampling.get_sigmas_karras(
-                config["num_steps"],
-                config["model"]["sigma_min"],
-                config["model"]["sigma_max"],
-                rho=config["model"]["rho"],
-                device=z.device,
+                self.config["num_steps"],
+                self.config["model"]["sigma_min"],
+                self.config["model"]["sigma_max"],
+                rho=self.config["model"]["rho"],
+                device=cond_feats.device,
             )
 
-            sampler_kw_args = {"extra_args": {"context": z}, "disable": True}
-            if config["sampler"] == "euler":
+            sampler_kw_args = {"extra_args": {"context": cond_feats}, "disable": True}
+            if self.config["sampler"] == "euler":
                 sampler_class = k_diffusion.sampling.sample_euler
-            elif config["sampler"] == "heun":
+            elif self.config["sampler"] == "heun":
                 sampler_class = k_diffusion.sampling.sample_heun
-                sampler_kw_args["s_churn"] = config["model"]["s_churn"]
-                sampler_kw_args["s_noise"] = config["model"]["s_noise"]
-            elif config["sampler"] == "dpmpp_2m":
+                sampler_kw_args["s_churn"] = self.config["model"]["s_churn"]
+                sampler_kw_args["s_noise"] = self.config["model"]["s_noise"]
+            elif self.config["sampler"] == "dpmpp_2m":
                 sampler_class = k_diffusion.sampling.sample_dpmpp_2m
-            elif config["sampler"] == "dpmpp_2s_ancestral":
+            elif self.config["sampler"] == "dpmpp_2s_ancestral":
                 sampler_class = k_diffusion.sampling.sample_dpmpp_2s_ancestral
-            elif config["sampler"] == "sample_euler_ancestral":
+            elif self.config["sampler"] == "sample_euler_ancestral":
                 sampler_class = k_diffusion.sampling.sample_euler_ancestral
-            elif config["sampler"] == "sample_lms":
+            elif self.config["sampler"] == "sample_lms":
                 sampler_class = k_diffusion.sampling.sample_lms
-            elif config["sampler"] == "sample_dpmpp_2m_sde":
+            elif self.config["sampler"] == "sample_dpmpp_2m_sde":
                 sampler_class = k_diffusion.sampling.sample_dpmpp_2m_sde
             else:
                 raise NotImplementedError(
-                    f"Sampler {config['sampler']} not implemented"
+                    f"Sampler {self.config['sampler']} not implemented"
                 )
             x_0 = sampler_class(self.diffusion, x_T, sigmas, **sampler_kw_args)
 
         else:  # one step for consistency model
-            x_0 = self.diffusion.forward(x_T, config["model"]["sigma_max"], context=z)
+            x_0 = self.diffusion.forward(
+                x_T, self.config["model"]["sigma_max"], context=cond_feats
+            )
 
         return x_0
 
@@ -175,12 +181,12 @@ class Diffusion(Module):
             model_ema_target: target model
             config: dict
         """
-
-        # get latent code from encoder
-        z = cond_feats
-
         loss = self.diffusion.consistency_loss(
-            x, model_teacher.diffusion, model_target.diffusion, config, context=z
+            x,
+            model_teacher.diffusion,
+            model_target.diffusion,
+            config,
+            context=cond_feats,
         ).mean()  # consistency loss
 
         return loss
@@ -431,21 +437,21 @@ class ConcatSquashLinear(Module):
 
 
 class PointwiseNet_kDiffusion(Module):
-    def __init__(configs):
+    def __init__(self, config):
         super().__init__()
-        context_dim = configs["model"]["cond_dim"]
-        point_dim = configs["model"]["feature_dim"]
+        context_dim = config["model"]["cond_dim"]
+        point_dim = config["model"]["feature_dim"]
         time_dim = 64
         fourier_scale = (
             16  # 1 in k-diffusion, 16 in EDM, 30 in Score-based generative modeling
         )
 
         self.act = functional.leaky_relu
-        hidden_1 = configs["model"].get("diffusion_pointwise_hidden_l1", 128)
-        hidden_2 = configs["model"].get("diffusion_pointwise_hidden_l2", hidden_1 * 2)
-        hidden_3 = configs["model"].get("diffusion_pointwise_hidden_l3", hidden_2 * 2)
-        hidden_4 = configs["model"].get("diffusion_pointwise_hidden_l4", hidden_2)
-        hidden_5 = configs["model"].get("diffusion_pointwise_hidden_l5", hidden_1)
+        hidden_1 = config["model"].get("diffusion_pointwise_hidden_l1", 128)
+        hidden_2 = config["model"].get("diffusion_pointwise_hidden_l2", hidden_1 * 2)
+        hidden_3 = config["model"].get("diffusion_pointwise_hidden_l3", hidden_2 * 2)
+        hidden_4 = config["model"].get("diffusion_pointwise_hidden_l4", hidden_2)
+        hidden_5 = config["model"].get("diffusion_pointwise_hidden_l5", hidden_1)
         self.layers = ModuleList(
             [
                 ConcatSquashLinear(point_dim, hidden_1, context_dim + time_dim),

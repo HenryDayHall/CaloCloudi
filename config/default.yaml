@@ -1,7 +1,7 @@
-device: "cuda"
+device: "cpu"
 sampler: "heun"
 num_steps: 20
-output_path: ""
+output_path: "/data/dust/user/dayhallh/data/CaloClouds_diffusion"
 
 preprocessing:
   conditioning:
@@ -52,15 +52,16 @@ data:
   incident_pdg_key: null
   incident_energy_key: "energy"
   incident_direction_key: "p_norm_local"
+  n_points_key: "n_points"
 
-  Xmin: -250
-  Xmax: 250
-  Ymin: -250
-  Ymax: 250
-  Xmin_in_detector: -250
-  Xmax_in_detector: 250
-  Zmin_in_detector: -250
-  Zmax_in_detector: 250
+  Xmin: -250  # in data coords
+  Xmax: 250  # in data coords
+  Ymin: -250  # in data coords
+  Ymax: 250  # in data coords
+  Xmin_in_detector: -250  # in detector coords
+  Xmax_in_detector: 250  # in detector coords
+  Zmin_in_detector: -250 # in detector coords
+  Zmax_in_detector: 250  # in detector coords
 
 
   Xmean: -0.0074305227
@@ -93,9 +94,31 @@ detector:
   layer_bottom_pos: [1811.34020996, 1814.46508789, 1823.81005859, 1826.93505859, 1836.2800293, 1839.4050293, 1848.75, 1851.875, 1861.2199707 , 1864.3449707, 1873.68994141, 1876.81494141, 1886.16003418, 1889.28503418, 1898.63000488, 1901.75500488, 1911.09997559, 1914.22497559, 1923.56994629, 1926.69494629, 1938.14001465, 1943.36499023, 1954.81005859, 1960.03503418, 1971.47998047, 1976.70495605, 1988.15002441, 1993.375, 2004.81994629, 2010.04504395]
 
 training:
+  dtype: "float32"
   batch_size: 32
   max_points_per_event: 6000
   sigma_data: 0.5
+  sigma_sample_density:
+    type: "lognormal"
+    mean: -1.2
+    std: 1.2
   retain_quantized: true  # this dataset is fuzzed on disk
   diffusion_loss: "l2"
+  num_workers: 1
+  shuffle_data: true
+  optimiser: "Adam"
+  optimiser_kwargs:
+    lr: 0.001
+    betas: [0.9, 0.999]
+    eps: 0.00000001
+  end_epoch: 100
+  start_lr: 0.001
+  end_lr: 0.00001
+  ema_power: 0.6667
+  ema_max_value: 0.9999
+  max_grad_norm: 10.0
+  checkpoint_time_interval_min: 30
+  checkpoint_batch_interval: -1
+
+
   

@@ -14,7 +14,7 @@ class PointCloudDataset(Dataset):
 
     def __init__(
         self,
-        configs,
+        config,
         dataset_part="train",
     ):
         """
@@ -23,32 +23,32 @@ class PointCloudDataset(Dataset):
 
         Parameters
         ----------
-        configs: dict
+        config: dict
             config...
         """
-        self.configs = configs
-        file_path = self.configs["data"]["dataset_path"]
+        self.config = config
+        file_path = self.config["data"]["dataset_path"]
         self.keys_to_include = {
-            name: self.configs["data"].get(f"{name}_key", name)
-            for name in self.configs["model"]["cond_features"] + ["points"]
+            name: self.config["data"].get(f"{name}_key", name)
+            for name in self.config["model"]["cond_features"] + ["points"]
         }
         self.open_files = self._open_data_files(file_path, dataset_part)
 
         self._prior_event_axes = self._get_prior_event_axes()
 
-        self.max_ds_seq_len = configs["training"]["max_points_per_event"]
+        self.max_ds_seq_len = config["training"]["max_points_per_event"]
         self.index_list = self._make_index_list()
         self.front_padded = self._is_front_padded()
-        self.bs = configs["training"]["batch_size"]
+        self.bs = config["training"]["batch_size"]
 
-        self.retain_quantized = self.configs["training"]["retain_quantized"]
+        self.retain_quantized = self.config["training"]["retain_quantized"]
         self.offset = (
-            self.configs["data"]["cell_size"]
-            / self.configs["data"]["divisions_per_cell"]
+            self.config["data"]["cell_size"]
+            / self.config["data"]["divisions_per_cell"]
         )
 
-        self.conditioning_transform = preprocessing(self.configs, "conditioning")
-        self.features_transform = preprocessing(self.configs, "features")
+        self.conditioning_transform = preprocessing(self.config, "conditioning")
+        self.features_transform = preprocessing(self.config, "features")
         # avoid repeat calculation
         self._len = len(self.index_list)
 
@@ -76,8 +76,8 @@ class PointCloudDataset(Dataset):
         list
             List of h5py.File objects.
         """
-        file_range_start = self.configs["data"][f"{dataset_part}_range_start"]
-        file_range_end = self.configs["data"][f"{dataset_part}_range_end"]
+        file_range_start = self.config["data"][f"{dataset_part}_range_start"]
+        file_range_end = self.config["data"][f"{dataset_part}_range_end"]
         all_files = [
             h5py.File(path, "r")
             for path in get_files(file_path, file_range_start, file_range_end)
@@ -101,12 +101,12 @@ class PointCloudDataset(Dataset):
             of number of points.
         """
         index_list = []
-        event_key = self.configs["data"]["points_key"]
+        event_key = self.config["data"]["points_key"]
         for file_idx, dataset in enumerate(self.open_files):
             if "n_points" in dataset:
                 n_points = dataset["n_points"][:]
             else:
-                if self.configs["data"]["roll_axis"]:
+                if self.config["data"]["roll_axis"]:
                     events = np.moveaxis(dataset[event_key], -1, -2)
                     n_points = self.get_n_points(events)
                 else:
@@ -128,7 +128,7 @@ class PointCloudDataset(Dataset):
         for all files in the dataset.
         """
         file_0 = self.open_files[0]
-        n_events_in_file0 = file_0[self.configs["data"]["points_key"]].shape[0]
+        n_events_in_file0 = file_0[self.config["data"]["points_key"]].shape[0]
         axes = {
             name: [slice(None)] * file_0[key].shape.index(n_events_in_file0)
             for name, key in self.keys_to_include.items()
@@ -137,7 +137,7 @@ class PointCloudDataset(Dataset):
         return axes
 
     def _is_front_padded(self, check_file=0):
-        padding = self.configs["data"]["padding"]
+        padding = self.config["data"]["padding"]
         if padding == "front":
             is_front_padded = True
         elif padding == "back":
@@ -173,8 +173,8 @@ class PointCloudDataset(Dataset):
         event[:, :, 1] = event[:, :, 1] + pos_offset_y
 
     def _fuzz_perpendicular(self, event):
-        layer_bottom_pos = self.configs["data"]["layer_bottom_pos"]
-        cell_thickness = self.configs["data"]["cell_thickness"]
+        layer_bottom_pos = self.config["data"]["layer_bottom_pos"]
+        cell_thickness = self.config["data"]["cell_thickness"]
         layer_floors, layer_ceilings = floors_ceilings(
             layer_bottom_pos,
             cell_thickness,
@@ -202,11 +202,11 @@ class PointCloudDataset(Dataset):
         assert done.all()
 
     def _event_processing(self, event):
-        if self.configs["data"]["roll_axis"]:
+        if self.config["data"]["roll_axis"]:
             event = np.moveaxis(event, -1, -2)
 
         # Ensure the shower runs along the z axis
-        events_to_local(event, self.configs["data"]["orientation"])
+        events_to_local(event, self.config["data"]["orientation"])
 
         # Trim padding
         max_len = (event[:, :, 3] > 0).sum(axis=1).max()
@@ -259,10 +259,10 @@ class PointCloudDatasetUnordered(PointCloudDataset):
         return idxs
 
 
-def from_configs(configs, dataset_part="train"):
-    if configs["data"]["format"] == "padded":
-        return PointCloudDataset(configs, dataset_part=dataset_part)
-    elif configs["data"]["format"] == "padded_unordered":
-        return PointCloudDatasetUnordered(configs, dataset_part=dataset_part)
+def from_config(config, dataset_part="train"):
+    if config["data"]["format"] == "padded":
+        return PointCloudDataset(config, dataset_part=dataset_part)
+    elif config["data"]["format"] == "padded_unordered":
+        return PointCloudDatasetUnordered(config, dataset_part=dataset_part)
     else:
         raise NotImplementedError

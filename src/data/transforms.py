@@ -86,7 +86,7 @@ class Partial(Transformation):
 
     def _setup_splits(self):
         self._splits = []
-        starts = [0] + self.split_indices[:-1]
+        starts = [0] + self.split_indices
         ends = self.split_indices + [None]
         for start, end in zip(starts, ends):
             here = slice(start, end)
@@ -98,12 +98,12 @@ class Partial(Transformation):
 
     def forward(self, x: torch.Tensor):
         for split, component in zip(self._splits, self.components):
-            x[split] = component.forward(x[split])
+            x[*split] = component.forward(x[*split])
         return x
 
     def inverse(self, x: torch.Tensor):
         for split, component in zip(self._splits, self.components):
-            x[split] = component.inverse(x[split])
+            x[*split] = component.inverse(x[*split])
         return x
 
 
