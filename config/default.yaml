@@ -4,13 +4,24 @@ num_steps: 20
 output_path: ""
 
 preprocessing:
-  incident_energy:
-    - [Log, {alpha: 0.5}]
-    - [Affine, {scale: ["data", "log_incidentE_std"], shift: ["data", "log_incidentE_mean"]}]
-  incident_direction:
-    - [Identity]
-
-    
+  conditioning:
+    - - Partial
+      - split_indices: [1]
+        components:
+          - - [Log, {alpha: 0.5}]
+            - - Affine
+              - scale: ["data", "log_incidentE_std"]
+                shift: ["data", "log_incidentE_mean"]
+          - null
+  features:
+    - - Partial
+      - split_indices: [3]
+        components:
+          - null
+          - - [Log, {alpha: 0.5}]
+            - - Affine
+              - scale: ["data", "log_Estd"]
+                shift: ["data", "log_Emean"]
 
 model:
   logarithmic_point_energy: true
@@ -36,18 +47,18 @@ data:
   roll_axis: true
   padding: "front"
   points_key: "events"
-  incident_pdg_key: none
+  incident_pdg_key: null
   incident_energy_key: "energy"
   incident_direction_key: "p_norm_local"
 
-  Xcut: -250
-  Xcut: 250
-  Ycut: -250
-  Ycut: 250
-  Xcut_in_detector: -250
-  Xcut_in_detector: 250
-  Zcut_in_detector: -250
-  Zcut_in_detector: 250
+  Xmin: -250
+  Xmax: 250
+  Ymin: -250
+  Ymax: 250
+  Xmin_in_detector: -250
+  Xmax_in_detector: 250
+  Zmin_in_detector: -250
+  Zmax_in_detector: 250
 
 
   Xmean: -0.0074305227

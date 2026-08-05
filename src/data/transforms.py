@@ -10,6 +10,7 @@ from torch import nn
 __all__ = [
     "Transformation",
     "Sequence",
+    "Partial",
     "Identity",
     "Log",
     "LogIt",
@@ -61,13 +62,27 @@ class Sequence(Transformation):
                 raise ValueError("All sub-modules must be of type Transformation")
         return x
 
+
 class Partial(Transformation):
-    def __init__(self, split_indices: list[int], components: list[Transformation], axis: int = -1):
+    def __init__(
+        self,
+        split_indices: list[int],
+        components: list[Transformation | list | dict | None],
+        axis: int = -1,
+    ):
         super().__init__()
         self.split_indices = split_indices
-        self.components = components
+        self.components = [self._build_component(c) for c in components]
         self.axis = axis
         self._setup_splits()
+
+    @staticmethod
+    def _build_component(
+        component: Transformation | list | dict | None,
+    ) -> Transformation:
+        if isinstance(component, Transformation):
+            return component
+        return compose(component)
 
     def _setup_splits(self):
         self._splits = []
@@ -76,9 +91,9 @@ class Partial(Transformation):
         for start, end in zip(starts, ends):
             here = slice(start, end)
             if self.axis < 0:
-                split = [Ellipsis, here] + [slice(None)] * (-axis - 1)
+                split = [Ellipsis, here] + [slice(None)] * (-self.axis - 1)
             else:
-                split = [slice(None)] * axis + [here]
+                split = [slice(None)] * self.axis + [here]
             self._splits.append(split)
 
     def forward(self, x: torch.Tensor):
@@ -197,6 +212,27 @@ class Dequantize(Transformation):
 
 
 def compose(transformation: list[list[str | dict | list | None]] | None) -> Sequence:
+    """Build a :class:`Sequence` of transformations from a specification.
+
+    Parameters
+    ----------
+    transformation : list of list or None
+        A list of transformation specifications. Each element is a list where
+        the first item is the transformation name and the optional second item
+        is either a list of positional arguments or a dict of keyword
+        arguments. If ``None``, an identity transformation is returned.
+
+    Returns
+    -------
+    Sequence
+        The composed sequence of transformations.
+
+    Raises
+    ------
+    ValueError
+        If a transformation name is invalid or its arguments are not a list or
+        a dict.
+    """
     if transformation is None:
         return Sequence([Identity()])
     trafo_list = []
@@ -222,9 +258,110 @@ def compose(transformation: list[list[str | dict | list | None]] | None) -> Sequ
     return Sequence(trafo_list)
 
 
-def preproceeing(configs, part):
-    transformations = configs["preproceeing"][part]
-    pass
+def _resolve_value(configs: dict, value):
+    """Recursively resolve config keys within ``value``.
+
+    A ``value`` that is a list of strings forming a valid path into ``configs``
+    is replaced by the value found there. Otherwise ``value`` is treated as a
+    raw value or a container to recurse into.
+
+    Parameters
+    ----------
+    configs : dict
+        Nested configuration dictionary.
+    value : object
+        The value to resolve.
+
+    Returns
+    -------
+    object
+        The resolved value.
+    """
+    if not hasattr(value, "__iter__"):
+        return value
+    try:
+        part = configs
+        for key in value:
+            part = part[key]
+        return part
+    except KeyError:
+        return value
 
 
+def leaf_like(value):
+    """Return ``True`` if ``value`` is a leaf of the transformation structure.
 
+    A leaf is either a non-iterable value or a list containing only leaves
+    (i.e. a list of strings representing a config key path).
+
+    Parameters
+    ----------
+    value : object
+        The value to check.
+
+    Returns
+    -------
+    bool
+        Whether ``value`` should be treated as a leaf.
+    """
+    if not hasattr(value, "__iter__"):
+        return True
+    if isinstance(value, list):
+        return all(leaf_like(v) for v in value)
+    return isinstance(value, str)
+
+
+def fetch_values(
+    configs: dict,
+    nested_iterable,
+):
+    """Recursively resolve config keys within a nested structure.
+
+    The ``nested_iterable`` describes a transformation (or part of one) and may
+    contain nested lists and dicts. Any leaf that is a list of strings forming a
+    valid path into ``configs`` is replaced by the value found there. Raw values
+    are left untouched.
+
+    Parameters
+    ----------
+    configs : dict
+        Nested configuration dictionary.
+    nested_iterable : object
+        The structure to resolve. May contain lists, dicts, and leaf values.
+
+    Returns
+    -------
+    object
+        The structure with config keys replaced by their values.
+    """
+    if leaf_like(nested_iterable):
+        return _resolve_value(configs, nested_iterable)
+    if isinstance(nested_iterable, dict):
+        resolved = {}
+        for key, value in nested_iterable.items():
+            resolved[key] = fetch_values(configs, value)
+        return resolved
+    if isinstance(nested_iterable, list):
+        return [fetch_values(configs, element) for element in nested_iterable]
+    return nested_iterable
+
+
+def preprocessing(configs, part):
+    """Build the preprocessing transformation for a given part.
+
+    Parameters
+    ----------
+    configs : dict
+        Nested configuration dictionary containing a ``"preprocessing"`` entry.
+    part : str
+        The part of the preprocessing to build (e.g. ``"features"`` or
+        ``"conditioning"``).
+
+    Returns
+    -------
+    Sequence
+        The composed preprocessing transformation with config keys resolved.
+    """
+    transformations = configs["preprocessing"][part]
+    transformations = fetch_values(configs, transformations)
+    return compose(transformations)
