@@ -2,6 +2,7 @@ import sys
 import os
 import numpy as np
 from src.evaluation import inference
+from src.data.read_write import n_event_in_part
 
 model_path = sys.argv[1]
 model_name = os.path.basename(model_path)
@@ -9,11 +10,13 @@ model_dir = os.path.dirname(model_path)
 output_path = os.path.join(model_dir, model_name.split(".")[0] + "_testset.npy")
 
 sampler = inference.Sampler.from_model_path(model_path)
+total_test_size = n_event_in_part(sampler.config, "test")
+print(f"Total test size: {total_test_size}")
 if True:
-    n_events = 10
+    n_events = 1_000
     print(f"Sampling {n_events} events")
     cond, points, target, sample = sampler.sample_from_dataset(
-        "test", return_target=True, total_size=10
+        "test", return_target=True, total_size=n_events
     )
     del cond
     del points
@@ -33,9 +36,9 @@ if True:
     )
     np.save(output_path.replace(".npy", "_physical.npy"), physical_points)
 
-   # print("Converting to cells")
-   # cells = inference.sample_to_cells(physical_points, point_layer_ids, sampler.config)
-   # np.save(output_path.replace(".npy", "_cells.npy"), cells)
-   # print(f"Cell shape: {cells.shape}")
+    print("Converting to cells")
+    cells = inference.sample_to_cells(physical_points, point_layer_ids, sampler.config)
+    np.save(output_path.replace(".npy", "_cells.npy"), cells)
+    print(f"Cell shape: {cells.shape}")
 
     print("Done")

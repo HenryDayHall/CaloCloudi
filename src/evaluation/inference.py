@@ -180,17 +180,26 @@ def sample_to_physical(points, points_per_layer, config):
 
 
 def sample_to_cells(physical_points, point_layer_ids, config):
+    n_events = physical_points.shape[0]
     energy_mask = (physical_points[:, :, 3] > 0) & (point_layer_ids >= 0)
     layers, offset = create_map(config)
     x_bin_ids = -np.ones_like(point_layer_ids, dtype=int)
     z_bin_ids = -np.ones_like(point_layer_ids, dtype=int)
     layer_centers = get_layer_centers(config, coordinates="detector")
 
+    event_numbers = np.tile(
+        np.arange(n_events).reshape(-1, 1), (1, physical_points.shape[1])
+    )
+
     flat_cell_ids = []
     cell_centers = []
+    flat_event_numbers = []
+    flat_energies = []
     cell_id_reached = 0
     for layer_n, layer in enumerate(layers):
         layer_mask = (point_layer_ids == layer_n) & energy_mask
+        flat_event_numbers += [event_numbers[layer_mask]]
+        flat_energies += [physical_points[layer_mask, 3]]
 
         flat_xs = physical_points[layer_mask, 0]  # n_points_in_layer
         xedges = np.sort(layer["xedges"])
@@ -235,21 +244,23 @@ def sample_to_cells(physical_points, point_layer_ids, config):
             np.array([occupied_x_centers, occupied_y_centers, occupied_z_centers]).T
         )
 
+    # n_total_deposits
     flat_cell_ids = np.concatenate(flat_cell_ids)
+    # n_total_deposits
+    flat_event_numbers = np.concatenate(flat_event_numbers)
+    # n_total_deposits
+    flat_energies = np.concatenate(flat_energies)
+    # n_cells
     cell_centers = np.concatenate(cell_centers)
     n_unique_cells = len(cell_centers)
-    n_events = physical_points.shape[0]
     output = np.zeros((n_events, n_unique_cells, 4))
     output[:, :, :3] = cell_centers
 
-    event_numbers = np.tile(
-        np.arange(n_events).reshape(-1, 1), (1, physical_points.shape[1])
-    )
-    flat_event_numbers = event_numbers[energy_mask]
-    import ipdb; ipdb.set_trace()
+    # n_total_deposits
     flat_global_id = flat_event_numbers * n_unique_cells + flat_cell_ids
-    flat_energy = physical_points[energy_mask, 3]
-    flat_cell_energy = np.bincount(flat_global_id, weights=flat_energy)
-    output[energy_mask, 3] = flat_cell_energy
+    flat_cell_energy = np.bincount(
+        flat_global_id, weights=flat_energies, minlength=n_unique_cells * n_events
+    )
+    output[:, :, 3] = flat_cell_energy.reshape(n_events, n_unique_cells)
 
     return output

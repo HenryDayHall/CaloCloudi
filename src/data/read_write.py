@@ -100,6 +100,15 @@ def get_n_events(dataset_path, file_range_start, file_range_end):
     return n_events
 
 
+def n_events_in_part(config, part):
+    file_range_start = config["data"][f"{part}_range_start"]
+    file_range_end = config["data"][f"{part}_range_end"]
+    n_events = get_n_events(
+        config["data"]["dataset_path"], file_range_start, file_range_end
+    )
+    return n_events
+
+
 def events_to_local(events, orientation):
     """
     Rotate axes order so that the shower progresses along the z-axis.
