@@ -163,7 +163,7 @@ def sample_to_physical(points, points_per_layer, config):
     detector_z_range = config["data"]["Zmax_in_detector"] - detector_low_z
     shift_0 = detector_low_z - data_low_x
     scale_0 = detector_z_range / data_x_range
-    physical_points[~remove_mask] = (points[~remove_mask] + shift_0) * scale_0
+    physical_points[~remove_mask, 0] = (points[~remove_mask, 0] + shift_0) * scale_0
 
     data_low_y = config["data"]["Ymin"]
     detector_low_x = config["data"]["Xmin_in_detector"]
@@ -171,12 +171,22 @@ def sample_to_physical(points, points_per_layer, config):
     detector_x_range = config["data"]["Xmax_in_detector"] - detector_low_x
     shift_1 = detector_low_x - data_low_y
     scale_1 = detector_x_range / data_y_range
-    physical_points[~remove_mask] = (physical_points[~remove_mask] + shift_1) * scale_1
+    physical_points[~remove_mask, 1] = (physical_points[~remove_mask, 1] + shift_1) * scale_1
 
     # rotate to detector coords
     physical_points[:, :, [0, 1, 2]] = physical_points[:, :, [2, 0, 1]]
+    physical_points[remove_mask] = 0
 
     return physical_points, point_layer_ids
+
+def unshift_points(physical_points, point_layer_ids, conditioning, config):
+    data_low_x = config["data"]["Xmin"]
+    detector_low_z = config["data"]["Zmin_in_detector"]
+    data_x_range = config["data"]["Xmax"] - data_low_x
+    detector_z_range = config["data"]["Zmax_in_detector"] - detector_low_z
+    shift_0 = detector_low_z - data_low_x
+    scale_0 = detector_z_range / data_x_range
+    physical_points[:, :, 2] = (physical_points[:, :, 2] - shift_0) / scale_0
 
 
 def sample_to_cells(physical_points, point_layer_ids, config):

@@ -2,7 +2,7 @@ import sys
 import os
 import numpy as np
 from src.evaluation import inference
-from src.data.read_write import n_event_in_part
+from src.data.read_write import n_events_in_part
 
 model_path = sys.argv[1]
 model_name = os.path.basename(model_path)
@@ -10,7 +10,8 @@ model_dir = os.path.dirname(model_path)
 output_path = os.path.join(model_dir, model_name.split(".")[0] + "_testset.npy")
 
 sampler = inference.Sampler.from_model_path(model_path)
-total_test_size = n_event_in_part(sampler.config, "test")
+test_file_sizes = n_events_in_part(sampler.config, "test")
+total_test_size = np.sum(test_file_sizes)
 print(f"Total test size: {total_test_size}")
 if True:
     n_events = 1_000
