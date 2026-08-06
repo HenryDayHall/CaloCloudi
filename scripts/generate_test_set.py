@@ -14,12 +14,11 @@ test_file_sizes = n_events_in_part(sampler.config, "test")
 total_test_size = np.sum(test_file_sizes)
 print(f"Total test size: {total_test_size}")
 if True:
-    n_events = 1_000
+    n_events = 10
     print(f"Sampling {n_events} events")
     cond, points, target, sample = sampler.sample_from_dataset(
         "test", return_target=True, total_size=n_events
     )
-    del cond
     del points
     print(f"Sample shape: {sample.shape}")
 
@@ -35,10 +34,15 @@ if True:
     physical_points, point_layer_ids = inference.sample_to_physical(
         sample, points_per_layer, sampler.config
     )
+    print("Unshifting points")
+    physical_points = inference.unshift_points(
+        physical_points, point_layer_ids, cond, sampler.config
+    )
     np.save(output_path.replace(".npy", "_physical.npy"), physical_points)
+    del cond
 
     print("Converting to cells")
-    cells = inference.sample_to_cells(physical_points, point_layer_ids, sampler.config)
+    cells = inference.physical_to_cells(physical_points, point_layer_ids, sampler.config)
     np.save(output_path.replace(".npy", "_cells.npy"), cells)
     print(f"Cell shape: {cells.shape}")
 

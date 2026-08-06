@@ -52,7 +52,7 @@ def confine_to_box(configs, X, Y, Z, E, detector_coords=True):
     return X, Y, Z, E
 
 
-def create_map(configs):
+def create_map(configs, confine=False):
     X, Y, Z, E = confine_to_box(configs, *load_muon_map(), detector_coords=True)
 
     layer_bottom_pos = configs["detector"]["layer_bottom_pos"]
@@ -116,6 +116,20 @@ def create_map(configs):
         layers.append({"xedges": xedges, "zedges": zedges, "grid": H})
 
     return layers, offset
+
+
+def get_layer_centers(config, coordinates="data"):
+    if coordinates == "data":
+        layer_bottom_pos = config["data"]["layer_bottom_pos"]
+        cell_thickness = config["data"]["cell_thickness"]
+    elif coordinates == "detector":
+        layer_bottom_pos = config["detector"]["layer_bottom_pos"]
+        cell_thickness = config["detector"]["cell_thickness"]
+
+    layer_bottom_pos = np.array(layer_bottom_pos)
+    layer_centers = layer_bottom_pos + cell_thickness / 2
+
+    return layer_centers
 
 
 def floors_ceilings(layer_bottom_pos, cell_thickness, percent_buffer=0.5):

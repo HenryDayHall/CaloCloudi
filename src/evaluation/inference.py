@@ -6,7 +6,7 @@ import collections
 from functools import lru_cache
 from ..diffusion import Diffusion
 from ..data import transforms, read_write
-from ..detector_map import create_map, find_layers
+from ..detector_map import create_map, find_layers, get_layer_centers
 
 
 class Sampler:
@@ -45,17 +45,16 @@ class Sampler:
     def sample(self, cond, num_points):
         cond = torch.from_numpy(cond).to(self.config["device"], dtype=self.datatype)
         max_points = int(np.max(num_points))
-        output = self.model.sample(
-            self.preprocess_conditioning.forward(cond), max_points
-        )
-        output = self.preprocess_features.inverse(output)
-        output = output.cpu().numpy()
-        energies = output[:, :, 3]
+        preprocessed_cond = self.preprocess_conditioning.forward(cond)
+        output = self.model.sample(preprocessed_cond, max_points)
+        restored_output = self.preprocess_features.inverse(output)
+        restored_output = restored_output.cpu().numpy()
+        energies = restored_output[:, :, 3]
         energy_order = np.argsort(energies, axis=1)
         remove_from_event = max_points - num_points
         remove = energy_order < remove_from_event[:, None]
-        output[remove] = 0
-        return output
+        restored_output[remove] = 0
+        return restored_output
 
     def get_cond(
         self, data_part, pick_events=None, total_size=None, return_target=False
@@ -105,20 +104,6 @@ class Sampler:
         return sampler
 
 
-def get_layer_centers(config, coordinates="data"):
-    if coordinates == "data":
-        layer_bottom_pos = config["data"]["layer_bottom_pos"]
-        cell_thickness = config["data"]["cell_thickness"]
-    elif coordinates == "detector":
-        layer_bottom_pos = config["detector"]["layer_bottom_pos"]
-        cell_thickness = config["detector"]["cell_thickness"]
-
-    layer_bottom_pos = np.array(layer_bottom_pos)
-    layer_centers = layer_bottom_pos + cell_thickness / 2
-
-    return layer_centers
-
-
 def points_per_layer_from_target(data_target, config):
     point_layers = find_layers(config, data_target)
     real_points = data_target[:, :, 3] > 0
@@ -154,7 +139,7 @@ def sample_to_physical(points, points_per_layer, config):
         layer_mask = (points_by_height > cumulative_points_per_layer[:, [layer]]) & (
             points_by_height < cumulative_points_per_layer[:, [layer + 1]]
         )
-        physical_points[layer_mask] = layer_centers[layer]
+        physical_points[layer_mask, 2] = layer_centers[layer]
         point_layer_ids[layer_mask] = layer
 
     data_low_x = config["data"]["Xmin"]
@@ -171,7 +156,9 @@ def sample_to_physical(points, points_per_layer, config):
     detector_x_range = config["data"]["Xmax_in_detector"] - detector_low_x
     shift_1 = detector_low_x - data_low_y
     scale_1 = detector_x_range / data_y_range
-    physical_points[~remove_mask, 1] = (physical_points[~remove_mask, 1] + shift_1) * scale_1
+    physical_points[~remove_mask, 1] = (
+        physical_points[~remove_mask, 1] + shift_1
+    ) * scale_1
 
     # rotate to detector coords
     physical_points[:, :, [0, 1, 2]] = physical_points[:, :, [2, 0, 1]]
@@ -179,17 +166,24 @@ def sample_to_physical(points, points_per_layer, config):
 
     return physical_points, point_layer_ids
 
-def unshift_points(physical_points, point_layer_ids, conditioning, config):
-    data_low_x = config["data"]["Xmin"]
-    detector_low_z = config["data"]["Zmin_in_detector"]
-    data_x_range = config["data"]["Xmax"] - data_low_x
-    detector_z_range = config["data"]["Zmax_in_detector"] - detector_low_z
-    shift_0 = detector_low_z - data_low_x
-    scale_0 = detector_z_range / data_x_range
-    physical_points[:, :, 2] = (physical_points[:, :, 2] - shift_0) / scale_0
+
+def unshift_points(physical_points, point_layer_ids, cond_data_coords, config):
+    direction_vectors = cond_data_coords[:, [2, 0, 1]]
+    normalised_direction_vectors = direction_vectors / np.linalg.norm(
+        direction_vectors, axis=1, keepdims=True
+    )
+    layer_centers = get_layer_centers(config, coordinates="detector")
+    shifts_per_layer = layer_centers[:, None, None] * normalised_direction_vectors[None, :]
+
+    shifts = shifts_per_layer[point_layer_ids]
+    real_points = (physical_points[:, :, 3] > 0) & (point_layer_ids >= 0)
+
+    physical_points[real_points] = physical_points[real_points] - shifts[real_points]
+
+    return physical_points
 
 
-def sample_to_cells(physical_points, point_layer_ids, config):
+def physical_to_cells(physical_points, point_layer_ids, config):
     n_events = physical_points.shape[0]
     energy_mask = (physical_points[:, :, 3] > 0) & (point_layer_ids >= 0)
     layers, offset = create_map(config)

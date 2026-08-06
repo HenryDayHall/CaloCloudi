@@ -1,4 +1,4 @@
-device: "cpu"
+device: "cuda"
 sampler: "heun"
 num_steps: 20
 output_path: "/data/dust/user/dayhallh/data/CaloClouds_diffusion"
@@ -20,7 +20,7 @@ preprocessing:
           - - [Affine, {inverse_scale: ["data", "Xstd"], neg_shift: ["data", "Xmean"]}]
           - - [Affine, {inverse_scale: ["data", "Ystd"], neg_shift: ["data", "Ymean"]}]
           - - [Affine, {inverse_scale: ["data", "Zstd"], neg_shift: ["data", "Zmean"]}]
-          - - [Log, {alpha: 0.5}]
+          - - [Log, {alpha: 0.001}]  # alpha allows the model to predict slightly negative values
             - - Affine
               - scale: ["data", "log_Estd"]
                 shift: ["data", "log_Emean"]
