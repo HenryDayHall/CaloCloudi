@@ -25,7 +25,7 @@ def emd(reference, predicted):
     return distances
 
 
-def pca(cells, energy_fraction=1.):
+def pca(cells, energy_fraction=1.0):
     pass
 
 
@@ -99,11 +99,25 @@ class Summary:
             np.savez(reference_path, **self.reference)
 
     def precalculated_reference_path(self):
-        pass
+        dataset_name = os.path.basename(self.config["data"]["dataset_path"])
+        dataset_name = dataset_name.split(".")[0].split("{")[0]
+        out_dir = self.config["output"]["path"]
+        precalc_dir = os.path.join(out_dir, "precalculated_reference", dataset_name)
+        os.makedirs(precalc_dir, exist_ok=True)
+        file_name = f"pre{self.data_part}_Total{int(self.total_size)}"
+        if self.pick_events is not None:
+            picky = f"_Pick{self.pick_events}"
+            file_name += "".join(p for p in picky if p.isalnum())
+        else:
+            file_name += "_NoPick"
+        file_name += ".npz"
+        path = os.path.join(precalc_dir, file_name)
+        return path
 
     def fetch_reference(self):
         cond_columns = [
-            self.config["data"][f"{name}_key"] for name in self.config["model"]["cond_features"]
+            self.config["data"][f"{name}_key"]
+            for name in self.config["model"]["cond_features"]
         ]
         cond, target = read_write.read_raw_regaxes(
             self.config,
@@ -116,7 +130,9 @@ class Summary:
         physical_points = inference.unshift_points(
             physical_points, point_layer_ids, cond, self.config
         )
-        cells = inference.physical_to_cells(physical_points, point_layer_ids, self.config)
+        cells = inference.physical_to_cells(
+            physical_points, point_layer_ids, self.config
+        )
         return cond, cells
 
     def calculate_reference(self):
@@ -136,6 +152,3 @@ class Summary:
         singulars["radial_occupancies"] = radial_occupancies(cells)
         singulars["layer_occupancies"] = layer_occupancies(cells)
         return singulars, cells
-
-
-

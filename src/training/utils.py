@@ -47,7 +47,10 @@ class Logger:
 
     def add_step(self, **kwargs):
         for name in self.per_step_log:
-            self.values[name].append(kwargs.get(name, 0.0))
+            given = kwargs.get(name, 0.0)
+            if isinstance(given, torch.Tensor):
+                given = given.detach().cpu().item()
+            self.values[name].append(given)
 
     def add_text(self, text):
         timestamp = time.strftime("%H-%M-%S")

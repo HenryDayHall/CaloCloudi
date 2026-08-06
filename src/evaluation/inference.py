@@ -173,7 +173,9 @@ def unshift_points(physical_points, point_layer_ids, cond_data_coords, config):
         direction_vectors, axis=1, keepdims=True
     )
     layer_centers = get_layer_centers(config, coordinates="detector")
-    shifts_per_layer = layer_centers[:, None, None] * normalised_direction_vectors[None, :]
+    shifts_per_layer = (
+        layer_centers[:, None, None] * normalised_direction_vectors[None, :]
+    )
 
     shifts = shifts_per_layer[point_layer_ids]
     real_points = (physical_points[:, :, 3] > 0) & (point_layer_ids >= 0)
