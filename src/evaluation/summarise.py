@@ -25,36 +25,280 @@ def emd(reference, predicted):
     return distances
 
 
+def _cell_mask(cells):
+    """Boolean mask selecting real (non-padding) cells based on positive energy."""
+    return cells[:, :, 3] > 0
+
+
+def _radial_distances(cells, directions):
+    """
+    Perpendicular distance of each cell from the line through the origin
+    along ``directions``.
+
+    Parameters
+    ----------
+    cells : np.ndarray
+        Array of shape ``[n_events, n_cells, 4]`` with features x, y, z, e.
+    directions : np.ndarray
+        Array of shape ``[n_events, 3]`` with features x, y, z.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``[n_events, n_cells]`` with perpendicular distances.
+    """
+    positions = cells[:, :, :3]
+    unit_dirs = directions / np.linalg.norm(directions, axis=1, keepdims=True)
+    # projection of each position onto the direction
+    projection = np.einsum("ecd,ed->ec", positions, unit_dirs)
+    parallel = projection[:, :, None] * unit_dirs[:, None, :]
+    perpendicular = positions - parallel
+    return np.linalg.norm(perpendicular, axis=2)
+
+
 def pca(cells, energy_fraction=1.0):
-    pass
+    """
+    Energy-weighted principal component analysis of the spatial cell
+    distribution for each event.
+
+    Parameters
+    ----------
+    cells : np.ndarray
+        Array of shape ``[n_events, n_cells, 4]`` with features x, y, z, e.
+    energy_fraction : float, optional
+        Fraction of cells to include in the analysis. Default is
+        ``1.0``.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``[n_events, 3]`` with the eigenvalues of the
+        energy-weighted covariance matrix, sorted in descending order.
+    """
+    n_events = cells.shape[0]
+    eigenvalues = np.zeros((n_events, 3))
+    mask = _cell_mask(cells)
+    for event_n in range(n_events):
+        event_mask = mask[event_n]
+        # get the top energy_fraction of the cells
+        energies = cells[event_n, event_mask, 3]
+        energy_order = np.argsort(energies)
+        order_cut = int(len(energies) * (1 - energy_fraction))
+        energy_fraction_mask = energy_order > order_cut
+        weights = energies[energy_fraction_mask]
+        positions = cells[event_n, event_mask, :3][energy_fraction_mask]
+
+        total_weight = weights.sum()
+        if total_weight <= 0 or positions.shape[0] < 2:
+            continue
+        mean = np.average(positions, axis=0, weights=weights)
+        centered = positions - mean
+        cov = (weights[:, None] * centered).T @ centered / total_weight
+        vals = np.linalg.eigvalsh(cov)
+        eigenvalues[event_n] = np.sort(vals)[::-1]
+    return eigenvalues
 
 
 def event_energy(cells):
-    pass
+    """
+    Total energy per event.
+
+    Parameters
+    ----------
+    cells : np.ndarray
+        Array of shape ``[n_events, n_cells, 4]`` with features x, y, z, e.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``[n_events]`` with the summed cell energy.
+    """
+    return cells[:, :, 3].sum(axis=1)
 
 
-def cell_energies(cells):
-    pass
+def cell_energies(cells, bins=None):
+    """
+    Histogram of cell energies for each event.
+
+    Parameters
+    ----------
+    cells : np.ndarray
+        Array of shape ``[n_events, n_cells, 4]`` with features x, y, z, e.
+    bins : int, or list of bins, optional
+        Energy bins, by default 50 logarithmically spaced bins between
+        ``0.001`` and ``100``.
+
+    Returns
+    -------
+    counts : np.ndarray
+        Array of shape ``[n_events, n_bins]`` with the cell count per energy
+        bin for each event.
+    bin_edges : np.ndarray
+        Array of shape ``[n_bins + 1]`` with the energy bin edges.
+    """
+    if bins is None:
+        bins = np.logspace(np.log10(0.001), np.log10(100), 50)
+    mask = _cell_mask(cells)
+    energies = cells[:, :, 3]
+    n_events = cells.shape[0]
+    bin_edges = np.histogram_bin_edges(energies[mask], bins=bins)
+    counts = np.empty((n_events, len(bin_edges) - 1))
+    for event_n in range(n_events):
+        counts[event_n], _ = np.histogram(
+            energies[event_n, mask[event_n]], bins=bin_edges
+        )
+    return counts, bin_edges
 
 
-def radial_energy(cells, directions):
-    pass
+def radial_energy(cells, directions, bins=None):
+    """
+    Energy binned by perpendicular distance from the incident direction.
+
+    Parameters
+    ----------
+    cells : np.ndarray
+        Array of shape ``[n_events, n_cells, 4]`` with features x, y, z, e.
+    directions : np.ndarray
+        Array of shape ``[n_events, 3]`` with features x, y, z.
+    bins : int, or list of bins, optional
+        Number of radial bins, by default 50 bins of width 5 mm.
+
+    Returns
+    -------
+    counts : np.ndarray
+        Array of shape ``[n_events, n_bins]`` with the summed energy per radial bin.
+    bin_edges : np.ndarray
+        Array of shape ``[n_events, n_bins + 1]`` with the radial bin edges.
+    """
+    if bins is None:
+        bins = np.arange(0, 250, 5)
+    mask = _cell_mask(cells)
+    distances = _radial_distances(cells, directions)
+    energies = cells[:, :, 3]
+    n_events = cells.shape[0]
+    bin_edges = np.histogram_bin_edges(distances[mask], bins=bins)
+    counts = np.empty((n_events, len(bin_edges) - 1))
+    for event_n in range(n_events):
+        event_mask = mask[event_n]
+        counts[event_n], _ = np.histogram(
+            distances[event_n, event_mask],
+            bins=bin_edges,
+            weights=energies[event_n, event_mask],
+        )
+    return counts, bin_edges
 
 
-def layer_energies(cells):
-    pass
+def layer_energies(cells, config):
+    """
+    Total energy deposited in each detector layer.
+
+    Parameters
+    ----------
+    cells : np.ndarray
+        Array of shape ``[n_events, n_cells, 4]`` with features x, y, z, e.
+    config : dict
+        Configuration used to obtain the detector layer centers.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``[n_events, n_layers]`` with the summed energy per layer.
+    """
+    layer_ids = find_layers(config, cells, coordinates="detector")
+    n_layers = len(config["data"]["layer_bottom_pos"])
+    energies = cells[:, :, 3]
+    mask = _cell_mask(cells) & (layer_ids >= 0)
+    n_events = cells.shape[0]
+    counts = np.zeros((n_events, n_layers))
+    for event_n in range(n_events):
+        event_mask = mask[event_n]
+        counts[event_n] = np.bincount(
+            layer_ids[event_n, event_mask],
+            weights=energies[event_n, event_mask],
+            minlength=n_layers,
+        )
+    return counts
 
 
 def event_occupancies(cells):
-    pass
+    """
+    Number of active cells per event.
+
+    Parameters
+    ----------
+    cells : np.ndarray
+        Array of shape ``[n_events, n_cells, 4]`` with features x, y, z, e.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``[n_events]`` with the count of non-padding cells.
+    """
+    return _cell_mask(cells).sum(axis=1)
 
 
-def radial_occupancies(cells, directions):
-    pass
+def radial_occupancies(cells, directions, bins=None):
+    """
+    Number of active cells binned by perpendicular distance from the
+    incident direction.
+
+    Parameters
+    ----------
+    cells : np.ndarray
+        Array of shape ``[n_events, n_cells, 4]`` with features x, y, z, e.
+    directions : np.ndarray
+        Array of shape ``[n_events, 3]`` with features x, y, z.
+    bins : int, or list of bins, optional
+        Number of radial bins, by default 50 bins of width 5 mm.
+
+    Returns
+    -------
+    counts : np.ndarray
+        Array of shape ``[n_events, n_bins]`` with the cell count per radial bin.
+    bin_edges : np.ndarray
+        Array of shape ``[n_bins + 1]`` with the radial bin edges.
+    """
+    if bins is None:
+        bins = np.arange(0, 250, 5)
+    mask = _cell_mask(cells)
+    distances = _radial_distances(cells, directions)
+    n_events = cells.shape[0]
+    bin_edges = np.histogram_bin_edges(distances[mask], bins=bins)
+    counts = np.empty((n_events, len(bin_edges) - 1))
+    for event_n in range(n_events):
+        counts[event_n], _ = np.histogram(
+            distances[event_n, mask[event_n]], bins=bin_edges
+        )
+    return counts, bin_edges
 
 
-def layer_occupancies(cells):
-    pass
+def layer_occupancies(cells, config):
+    """
+    Number of active cells in each detector layer, summed over all events.
+
+    Parameters
+    ----------
+    cells : np.ndarray
+        Array of shape ``[n_events, n_cells, 4]`` with features x, y, z, e.
+    config : dict
+        Configuration used to obtain the detector layer centers.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``[n_events, n_layers]``
+        with the count of active cells per layer.
+    """
+    n_layers = len(config["data"]["layer_bottom_pos"])
+    layer_ids = find_layers(config, cells, coordinates="detector")
+    mask = _cell_mask(cells) & (layer_ids >= 0)
+    n_events = cells.shape[0]
+    counts = np.zeros((n_events, n_layers), dtype=int)
+    for event_n in range(n_events):
+        counts[event_n] = np.bincount(
+            layer_ids[event_n, mask[event_n]], minlength=n_layers
+        )
+    return counts
 
 
 def target_to_physical(points, config):
@@ -85,18 +329,108 @@ def target_to_physical(points, config):
 
 
 class Summary:
-    def __init__(self, config, data_part="test", pick_events=None, total_size=10_000):
+    def __init__(
+        self,
+        config,
+        data_part="test",
+        pick_events=None,
+        total_size=1_000,
+        printer=print,
+    ):
         self.config = config
         self._sampler = inference.Sampler.from_config(config)
         self.data_part = data_part
         self.pick_events = pick_events
         self.total_size = total_size
+        self.printer = printer
         reference_path = self.precalculated_reference_path()
         if os.path.exists(reference_path):
+            self.printer(f"Loading precalculated reference from {reference_path}")
             self.reference = np.load(reference_path)
         else:
+            self.printer(f"Calculating reference and saving to {reference_path}")
             self.reference = self.calculate_reference()
             np.savez(reference_path, **self.reference)
+        self.cond = self.reference["cond"]
+        self.printer(f"Have {len(self.cond)} reference events")
+        self.samples = {}
+        # generate these later as needed
+        self._points = None
+        self._points_per_layer = None
+
+    def _make_sampling_kit(self):
+        self.printer("Making sampling kit")
+        sampler = inference.Sampler(self.config)
+        self.printer("Getting condition from reference")
+        cond, self._points, target = sampler.get_cond(
+            self.data_part, self.pick_events, self.total_size
+        )
+        printer("Getting points per layer from reference")
+        self._points_per_layer = inference.points_per_layer_from_target(target, config)
+        printer(f"Max points per layer: {np.max(points_per_layer)}")
+
+    @property
+    def points(self):
+        if self._points is None:
+            self._make_sampling_kit()
+        return self._points
+
+    @property
+    def points_per_layer(self):
+        if self._points_per_layer is None:
+            self._make_sampling_kit()
+        return self._points_per_layer
+
+    @classmethod
+    def from_model_path(
+        cls,
+        model_path,
+        data_part="test",
+        pick_events=None,
+        total_size=1_000,
+        printer=print,
+        save_summary=True,
+    ):
+        printer(f"Loading model from {model_path}")
+        if save_summary:
+            output_path = cls.get_output_path_from_model_path(model_path)
+            printer(f"Saving summary to {output_path}")
+        config = inference.Sampler.get_config_from_model_path(model_path)
+        model_name = os.path.basename(model_path).split(".")[0]
+        this = cls(config, data_part, pick_events, total_size, printer)
+        this.add_from_model(model_name, model_path, output_path=output_path)
+        return this
+
+    def add_from_model(self, model_name, model, output_path=None):
+        sampler = inference.Sampler(self.config, model)
+        self.printer("Sampling the model using the reference")
+        sample = sampler.sample(self.cond, self.points)
+        self.printer(f"Sample shape: {sample.shape}")
+        self.printer("Converting to physical points")
+        physical_points, point_layer_ids = inference.sample_to_physical(
+            sample, self.points_per_layer, self.config
+        )
+        self.printer("Unshifting points")
+        physical_points = inference.unshift_points(
+            physical_points, point_layer_ids, self.cond, self.config
+        )
+        self.printer("Converting to cells")
+        cells = inference.physical_to_cells(
+            physical_points, point_layer_ids, self.config
+        )
+        self.add_sample_cells(model_name, cells, output_path=output_path)
+
+    def add_sample_cells(self, name, sample_cells, output_path=None):
+        sample_singulars = self.calculate_singulars(self.cond, sample_cells)
+        sample_comparitors = self.calculate_comparitors(sample_cells)
+        self.samples[name] = {**sample_singulars, **sample_comparitors}
+        if output_path is not None:
+            np.savez(output_path, **self.samples[name])
+
+    @staticmethod
+    def get_output_path_from_model_path(model_path):
+        output_path = model_path.split(".")[0] + "_summary.npz"
+        return output_path
 
     def precalculated_reference_path(self):
         dataset_name = os.path.basename(self.config["data"]["dataset_path"])
@@ -141,14 +475,28 @@ class Summary:
 
     def calculate_singulars(self, cond, cells):
         singulars = {}
+        directions = cond[:, [2, 0, 1]]
         singulars["cond"] = cond
         singulars["cells"] = cells
         singulars["pca"] = pca(cells)
+        singulars["pca_top4"] = pca(cells, energy_fraction=0.04)
         singulars["event_energy"] = event_energy(cells)
-        singulars["cell_energies"] = cell_energies(cells)
-        singulars["radial_energy"] = radial_energy(cells)
-        singulars["layer_energies"] = layer_energies(cells)
+        cell_energy_counts, cell_energy_edges = cell_energies(cells)
+        singulars["cell_energies"] = cell_energy_counts
+        singulars["cell_energies_edges"] = cell_energy_edges
+        radial_energy_counts, radial_energy_edges = radial_energy(cells, directions)
+        singulars["radial_energy"] = radial_energy_counts
+        singulars["radial_energy_edges"] = radial_energy_edges
+        singulars["layer_energies"] = layer_energies(cells, self.config)
         singulars["event_occupancies"] = event_occupancies(cells)
-        singulars["radial_occupancies"] = radial_occupancies(cells)
-        singulars["layer_occupancies"] = layer_occupancies(cells)
-        return singulars, cells
+        radial_occ_counts, radial_occ_edges = radial_occupancies(cells, directions)
+        singulars["radial_occupancies"] = radial_occ_counts
+        singulars["radial_occupancies_edges"] = radial_occ_edges
+        singulars["layer_occupancies"] = layer_occupancies(cells, self.config)
+        return singulars
+
+    def calculate_comparitors(self, sample_cells):
+        reference_cells = self.reference["cells"]
+        comparitors = {}
+        comparitors["emd"] = emd(reference_cells, sample_cells)
+        return comparitors

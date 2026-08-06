@@ -14,16 +14,18 @@ class Sampler:
     Note that when a model is given to the sampler it will be placed in eval mode
     """
 
-    def __init__(self, config, model, distilled=False):
+    def __init__(self, config, model=None, distilled=False):
         self.config = config
         self.datatype = getattr(torch, config["training"]["dtype"])
         if isinstance(model, str):
             self.model = Diffusion(config, distillation=distilled)
-            self.model.load_state_dict(torch.load(model))
+            device = config["device"]
+            self.model.load_state_dict(torch.load(model, map_location=device))
         else:
             self.model = model
-        self.model.to(config["device"], dtype=self.datatype)
-        self.model.eval().requires_grad_(False)
+        if model is not None:
+            self.model.to(config["device"], dtype=self.datatype)
+            self.model.eval().requires_grad_(False)
         self.preprocess_conditioning = transforms.preprocessing(config, "conditioning")
         self.preprocess_features = transforms.preprocessing(config, "features")
 
@@ -96,10 +98,19 @@ class Sampler:
         sample = self.sample(cond, points)
         return cond, points, target, sample
 
-    @classmethod
-    def from_model_path(cls, model_path):
+    @staticmethod
+    def get_config_from_model_path(model_path):
         log_dir = os.path.dirname(os.path.dirname(model_path))
         config = yaml.safe_load(open(os.path.join(log_dir, "config.yaml")))
+        cuda_avaliable = torch.cuda.is_available()
+        if not cuda_avaliable:
+            print("CUDA not avaliable, using CPU")
+            config["device"] = "cpu"
+        return config
+
+    @classmethod
+    def from_model_path(cls, model_path):
+        config = cls.get_config_from_model_path(model_path)
         sampler = cls(config, model_path)
         return sampler
 
@@ -124,6 +135,8 @@ def sample_to_physical(points, points_per_layer, config):
     num_to_remove = points.shape[1] - total_points_requested
     remove_mask = order_by_energy < num_to_remove[:, None]
 
+    physical_points[~remove_mask, 3] = points[~remove_mask, 3]
+
     beyond_detector = 10 * np.max(points[:, :, 2])
     points[:, :, 2][remove_mask] = beyond_detector
 
@@ -139,7 +152,7 @@ def sample_to_physical(points, points_per_layer, config):
         layer_mask = (points_by_height > cumulative_points_per_layer[:, [layer]]) & (
             points_by_height < cumulative_points_per_layer[:, [layer + 1]]
         )
-        physical_points[layer_mask, 2] = layer_centers[layer]
+        physical_points[layer_mask, 1] = layer_centers[layer]
         point_layer_ids[layer_mask] = layer
 
     data_low_x = config["data"]["Xmin"]
@@ -148,7 +161,7 @@ def sample_to_physical(points, points_per_layer, config):
     detector_z_range = config["data"]["Zmax_in_detector"] - detector_low_z
     shift_0 = detector_low_z - data_low_x
     scale_0 = detector_z_range / data_x_range
-    physical_points[~remove_mask, 0] = (points[~remove_mask, 0] + shift_0) * scale_0
+    physical_points[~remove_mask, 2] = (points[~remove_mask, 0] + shift_0) * scale_0
 
     data_low_y = config["data"]["Ymin"]
     detector_low_x = config["data"]["Xmin_in_detector"]
@@ -156,12 +169,8 @@ def sample_to_physical(points, points_per_layer, config):
     detector_x_range = config["data"]["Xmax_in_detector"] - detector_low_x
     shift_1 = detector_low_x - data_low_y
     scale_1 = detector_x_range / data_y_range
-    physical_points[~remove_mask, 1] = (
-        physical_points[~remove_mask, 1] + shift_1
-    ) * scale_1
+    physical_points[~remove_mask, 0] = (points[~remove_mask, 1] + shift_1) * scale_1
 
-    # rotate to detector coords
-    physical_points[:, :, [0, 1, 2]] = physical_points[:, :, [2, 0, 1]]
     physical_points[remove_mask] = 0
 
     return physical_points, point_layer_ids
@@ -173,14 +182,17 @@ def unshift_points(physical_points, point_layer_ids, cond_data_coords, config):
         direction_vectors, axis=1, keepdims=True
     )
     layer_centers = get_layer_centers(config, coordinates="detector")
-    shifts_per_layer = (
-        layer_centers[:, None, None] * normalised_direction_vectors[None, :]
-    )
+    x_shift_per_layer = layer_centers[:, None] * normalised_direction_vectors[None, :, 0]
+    z_shift_per_layer = layer_centers[:, None] * normalised_direction_vectors[None, :, 2]
 
-    shifts = shifts_per_layer[point_layer_ids]
+    n_events = physical_points.shape[0]
     real_points = (physical_points[:, :, 3] > 0) & (point_layer_ids >= 0)
 
-    physical_points[real_points] = physical_points[real_points] - shifts[real_points]
+    x_shifts = x_shift_per_layer[point_layer_ids, np.arange(n_events)[:, None]]
+    physical_points[real_points, 0] -= x_shifts[real_points]
+
+    z_shifts = z_shift_per_layer[point_layer_ids, np.arange(n_events)[:, None]]
+    physical_points[real_points, 2] -= z_shifts[real_points]
 
     return physical_points
 

@@ -14,7 +14,7 @@ test_file_sizes = n_events_in_part(sampler.config, "test")
 total_test_size = np.sum(test_file_sizes)
 print(f"Total test size: {total_test_size}")
 if True:
-    n_events = 10
+    n_events = 500
     print(f"Sampling {n_events} events")
     cond, points, target, sample = sampler.sample_from_dataset(
         "test", return_target=True, total_size=n_events
