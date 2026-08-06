@@ -53,17 +53,14 @@ def confine_to_box(configs, X, Y, Z, E, detector_coords=True):
 
 
 def create_map(configs):
-    X, Y, Z, E = confine_to_box(configs, *load_muon_map(), indetector_coords=True)
+    X, Y, Z, E = confine_to_box(configs, *load_muon_map(), detector_coords=True)
 
     layer_bottom_pos = configs["detector"]["layer_bottom_pos"]
     half_cell_size_global = configs["detector"]["cell_size"] / 2
     cell_thickness_global = configs["detector"]["cell_thickness"]
 
-    offset = (
-        configs["detector"]["cell_size"] / configs["detector"]["divisions_per_cell"]
-    )
-
-    dm = configs["detector"]["divisions_per_cell"]
+    dm = configs["data"]["divisions_per_cell"]
+    offset = configs["detector"]["cell_size"] / dm
 
     layers = []
     for layer_n in range(len(layer_bottom_pos)):  # loop over layers
@@ -170,6 +167,8 @@ def find_layers(config, points, coordinates="data"):
         layer_bottom_pos = config["detector"]["layer_bottom_pos"]
         cell_thickness = config["detector"]["cell_thickness"]
         height = points[:, :, 1]
+
+    layer_bottom_pos = np.array(layer_bottom_pos)
 
     layer_floors, layer_ceilings = floors_ceilings(
         layer_bottom_pos,

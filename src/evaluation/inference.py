@@ -6,13 +6,14 @@ import collections
 from functools import lru_cache
 from ..diffusion import Diffusion
 from ..data import transforms, read_write
-from ..detector_map import find_layers
+from ..detector_map import create_map, find_layers
 
 
 class Sampler:
     """
     Note that when a model is given to the sampler it will be placed in eval mode
     """
+
     def __init__(self, config, model, distilled=False):
         self.config = config
         self.datatype = getattr(torch, config["training"]["dtype"])
@@ -104,28 +105,151 @@ class Sampler:
         return sampler
 
 
-def sample_to_physical(points, config):
+def get_layer_centers(config, coordinates="data"):
+    if coordinates == "data":
+        layer_bottom_pos = config["data"]["layer_bottom_pos"]
+        cell_thickness = config["data"]["cell_thickness"]
+    elif coordinates == "detector":
+        layer_bottom_pos = config["detector"]["layer_bottom_pos"]
+        cell_thickness = config["detector"]["cell_thickness"]
+
+    layer_bottom_pos = np.array(layer_bottom_pos)
+    layer_centers = layer_bottom_pos + cell_thickness / 2
+
+    return layer_centers
+
+
+def points_per_layer_from_target(data_target, config):
+    point_layers = find_layers(config, data_target)
+    real_points = data_target[:, :, 3] > 0
+    n_layers = len(config["data"]["layer_bottom_pos"])
+    points_per_layer = np.zeros((data_target.shape[0], n_layers), dtype=int)
+    for i in range(n_layers):
+        points_per_layer[:, i] = np.sum((point_layers == i) & real_points, axis=1)
+    return points_per_layer
+
+
+def sample_to_physical(points, points_per_layer, config):
     physical_points = np.zeros_like(points)
-    point_layers = -np.ones(points.shape[:2], dtype=int)
+    point_layer_ids = -np.ones(points.shape[:2], dtype=int)
+
+    total_points_requested = points_per_layer.sum(1)
+    point_energy = points[:, :, 3]
+    order_by_energy = np.argsort(point_energy, axis=1)
+    num_to_remove = points.shape[1] - total_points_requested
+    remove_mask = order_by_energy < num_to_remove[:, None]
+
+    beyond_detector = 10 * np.max(points[:, :, 2])
+    points[:, :, 2][remove_mask] = beyond_detector
+
+    layer_centers = get_layer_centers(config, coordinates="detector")
+    points_by_height = np.argsort(points[:, :, 2], axis=1)
+
+    n_events, n_layers = points_per_layer.shape
+    cumulative_points_per_layer = np.concatenate(
+        (np.zeros((n_events, 1), dtype=int), np.cumsum(points_per_layer, axis=1)),
+        axis=-1,
+    ).astype(int)
+    for layer in range(n_layers):
+        layer_mask = (points_by_height > cumulative_points_per_layer[:, [layer]]) & (
+            points_by_height < cumulative_points_per_layer[:, [layer + 1]]
+        )
+        physical_points[layer_mask] = layer_centers[layer]
+        point_layer_ids[layer_mask] = layer
 
     data_low_x = config["data"]["Xmin"]
     detector_low_z = config["data"]["Zmin_in_detector"]
     data_x_range = config["data"]["Xmax"] - data_low_x
     detector_z_range = config["data"]["Zmax_in_detector"] - detector_low_z
-    shift_0 = detector_low_z - data_low_x,
+    shift_0 = detector_low_z - data_low_x
     scale_0 = detector_z_range / data_x_range
+    physical_points[~remove_mask] = (points[~remove_mask] + shift_0) * scale_0
 
     data_low_y = config["data"]["Ymin"]
     detector_low_x = config["data"]["Xmin_in_detector"]
     data_y_range = config["data"]["Ymax"] - data_low_y
     detector_x_range = config["data"]["Xmax_in_detector"] - detector_low_x
-    shift_1 = detector_low_x - data_low_y,
+    shift_1 = detector_low_x - data_low_y
     scale_1 = detector_x_range / data_y_range
+    physical_points[~remove_mask] = (physical_points[~remove_mask] + shift_1) * scale_1
 
-    data_layers = config["data"]["layer_bottom_pos"]
+    # rotate to detector coords
+    physical_points[:, :, [0, 1, 2]] = physical_points[:, :, [2, 0, 1]]
 
-    pass
+    return physical_points, point_layer_ids
 
 
-def sample_to_cells(physical_points, config):
-    pass
+def sample_to_cells(physical_points, point_layer_ids, config):
+    energy_mask = (physical_points[:, :, 3] > 0) & (point_layer_ids >= 0)
+    layers, offset = create_map(config)
+    x_bin_ids = -np.ones_like(point_layer_ids, dtype=int)
+    z_bin_ids = -np.ones_like(point_layer_ids, dtype=int)
+    layer_centers = get_layer_centers(config, coordinates="detector")
+
+    flat_cell_ids = []
+    cell_centers = []
+    cell_id_reached = 0
+    for layer_n, layer in enumerate(layers):
+        layer_mask = (point_layer_ids == layer_n) & energy_mask
+
+        flat_xs = physical_points[layer_mask, 0]  # n_points_in_layer
+        xedges = np.sort(layer["xedges"])
+        xcenters = 0.5 * (xedges[1:] + xedges[:-1])  # n_x_ids
+        # add underflow and overflow
+        xcenters = np.concatenate(([xedges[0] - 10], xcenters, [xedges[-1] + 10]))
+        n_x_ids = len(xcenters)
+        x_bin_ids[layer_mask] = np.digitize(flat_xs, xedges)
+
+        flat_zs = physical_points[layer_mask, 2]  # n_points_in_layer
+        zedges = np.sort(layer["zedges"])
+        z_bin_ids[layer_mask] = np.digitize(flat_zs, zedges)
+        zcenters = 0.5 * (zedges[1:] + zedges[:-1])  # n_z_ids
+        # add underflow and overflow
+        zcenters = np.concatenate(([zedges[0] - 10], zcenters, [zedges[-1] + 10]))
+        n_z_ids = len(zcenters)
+
+        # n_points_in_layer
+        layer_ids = n_x_ids * z_bin_ids[layer_mask] + x_bin_ids[layer_mask]
+        # n_x_ids * n_z_ids
+        x_center_by_layer_id = np.tile(xcenters, n_z_ids)
+        # n_x_ids * n_z_ids
+        z_center_by_layer_id = np.repeat(zcenters, n_x_ids)
+        y_center_for_layer = layer_centers[layer_n]
+
+        # n_occupied_layer_ids
+        occupided_layer_ids = np.sort(np.unique(layer_ids))
+        n_occupied_layer_ids = len(occupided_layer_ids)
+        use_cell_ids = cell_id_reached + np.arange(n_occupied_layer_ids)
+        # n_points_in_layer
+        cell_ids = use_cell_ids[np.searchsorted(occupided_layer_ids, layer_ids)]
+
+        flat_cell_ids.append(cell_ids)
+        cell_id_reached += n_occupied_layer_ids
+
+        # n_occupied_layer_ids
+        occupied_x_centers = x_center_by_layer_id[occupided_layer_ids]
+        occupied_z_centers = z_center_by_layer_id[occupided_layer_ids]
+        occupied_y_centers = np.repeat(y_center_for_layer, n_occupied_layer_ids)
+        # n_occupied_layer_ids, 3
+        cell_centers.append(
+            np.array([occupied_x_centers, occupied_y_centers, occupied_z_centers]).T
+        )
+
+    flat_cell_ids = np.concatenate(flat_cell_ids)
+    cell_centers = np.concatenate(cell_centers)
+    n_unique_cells = len(cell_centers)
+    n_events = physical_points.shape[0]
+    output = np.zeros((n_events, n_unique_cells, 4))
+    output[:, :, :3] = cell_centers
+
+    event_numbers = np.tile(
+        np.arange(n_events).reshape(-1, 1), (1, physical_points.shape[1])
+    )
+    flat_event_numbers = event_numbers[energy_mask]
+    import ipdb; ipdb.set_trace()
+    flat_global_id = flat_event_numbers * n_unique_cells + flat_cell_ids
+    flat_energy = physical_points[energy_mask, 3]
+    flat_cell_energy = np.bincount(flat_global_id, weights=flat_energy)
+    output[energy_mask, 3] = flat_cell_energy
+
+    return output
