@@ -376,9 +376,7 @@ class ShowerDataDataset(AbstractBase):
         for name_in_batch, name_on_disk in self.keys_to_include.items():
             data = np.array(
                 [
-                    getattr(self.open_files[file_n][name_on_disk], name_on_disk)[
-                        event_n
-                    ]
+                    getattr(self.open_files[file_n][event_n], name_on_disk)
                     for n_pts, file_n, event_n in self.index_list[idxs]
                 ]
             )

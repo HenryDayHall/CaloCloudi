@@ -7,6 +7,7 @@ from functools import lru_cache
 
 import h5py
 import numpy as np
+import showerdata
 
 
 @lru_cache(maxsize=1)
@@ -70,7 +71,7 @@ def get_files(dataset_path, file_range_start, file_range_end):
 
 
 @lru_cache(maxsize=1)
-def get_n_events(dataset_path, file_range_start, file_range_end):
+def get_n_events(dataset_path, file_range_start, file_range_end, dataset_format):
     """
     Get the number of events in the dataset
 
@@ -91,10 +92,14 @@ def get_n_events(dataset_path, file_range_start, file_range_end):
     """
     n_events = []
     for file_name in get_files(dataset_path, file_range_start, file_range_end):
-        with h5py.File(file_name, "r") as on_disk:
-            events_array_shape = on_disk["events"].shape
-            if np.sum(events_array_shape):
-                n_events.append(on_disk["events"].shape[-3])
+        if dataset_format == "showerdata":
+            loaded = showerdata.ShowerDataFile(file_name)
+            n_events.append(len(loaded))
+        else:
+            with h5py.File(file_name, "r") as on_disk:
+                events_array_shape = on_disk["events"].shape
+                if np.sum(events_array_shape):
+                    n_events.append(on_disk["events"].shape[-3])
     if len(n_events) < 2:
         n_events = np.sum(n_events)
     return n_events
@@ -104,7 +109,10 @@ def n_events_in_part(config, part):
     file_range_start = config["data"][f"{part}_range_start"]
     file_range_end = config["data"][f"{part}_range_end"]
     n_events = get_n_events(
-        config["data"]["dataset_path"], file_range_start, file_range_end
+        config["data"]["dataset_path"],
+        file_range_start,
+        file_range_end,
+        config["data"]["format"],
     )
     return n_events
 
@@ -282,7 +290,10 @@ def read_raw_regaxes(
     file_range_start = config["data"][f"{part}_range_start"]
     file_range_end = config["data"][f"{part}_range_end"]
     n_events = get_n_events(
-        config["data"]["dataset_path"], file_range_start, file_range_end
+        config["data"]["dataset_path"],
+        file_range_start,
+        file_range_end,
+        config["data"]["format"],
     )
     n_total_events = np.sum(n_events)
     total_size = min(100 if total_size is None else total_size, n_total_events)
@@ -320,6 +331,65 @@ def read_raw_regaxes(
             )
             file_start = file_end
 
+    if config["data"]["format"] == "showerdata":
+        per_event, events = _read_showerdata(
+            config, file_names, file_indices, per_event_cols
+        )
+    else:
+        per_event, events = _read_padded(
+            config, file_names, file_indices, per_event_cols
+        )
+
+    # postprocess
+    per_event = np.vstack(per_event)
+    if per_event.shape[1] == 1:
+        per_event = per_event[:, 0]
+
+    if len(events) == 1 or len(set(e.shape[1] for e in events)) == 1:
+        events = np.vstack(events)
+    else:  # pad to max len
+        # print("Padding to max len in case it is not done beforehand.")
+        to_pad = [e for e in events if e.shape[0] > 0]
+        max_len = max(e.shape[1] for e in events)
+        to_pad = np.array(
+            [
+                np.concatenate(
+                    [e, np.zeros((e.shape[0], max_len - e.shape[1], e.shape[-1]))],
+                    axis=1,
+                )
+                for e in to_pad
+            ]
+        )
+        events = np.vstack(to_pad)
+
+    events_to_local(events, config["data"]["orientation"])
+
+    return per_event, events
+
+
+def _read_showerdata(config, file_names, file_indices, per_event_cols):
+    per_event = []
+    events = []
+    for name, indices in zip(file_names, file_indices):
+        dataset = showerdata.ShowerDataFile(name)[indices]
+        events_here = dataset.points
+        # treat empty files
+        if len(events_here) == 0:
+            continue
+        events.append(events_here)
+
+        per_event_here = []
+        for col, name in enumerate(per_event_cols):
+            values = getattr(dataset, name)
+            if len(values.shape) == 1:
+                values = values[:, None]
+            per_event_here.append(values)
+        per_event.append(np.concatenate(per_event_here, axis=1))
+
+    return per_event, events
+
+
+def _read_padded(config, file_names, file_indices, per_event_cols):
     per_event = []
     events = []
     for name, indices in zip(file_names, file_indices):
@@ -327,8 +397,6 @@ def read_raw_regaxes(
             events_here = dataset["events"]
             # treat empty files
             if len(events_here) == 0:
-                events.append(np.zeros(0))
-                per_event.append(np.zeros(0))
                 continue
             # account for the variations in shower axes layout
             n_events_here = events_here.shape[-3]
@@ -369,29 +437,6 @@ def read_raw_regaxes(
                     here = here.swapaxes(0, event_axis)
                 per_event_here.append(here)
             per_event.append(np.concatenate(per_event_here, axis=1))
-
-    per_event = np.vstack(per_event)
-    if per_event.shape[1] == 1:
-        per_event = per_event[:, 0]
-
-    if len(events) == 1 or len(set(e.shape[1] for e in events)) == 1:
-        events = np.vstack(events)
-    else:  # pad to max len
-        # print("Padding to max len in case it is not done beforehand.")
-        to_pad = [e for e in events if e.shape[0] > 0]
-        max_len = max(e.shape[1] for e in events)
-        to_pad = np.array(
-            [
-                np.concatenate(
-                    [e, np.zeros((e.shape[0], max_len - e.shape[1], e.shape[-1]))],
-                    axis=1,
-                )
-                for e in to_pad
-            ]
-        )
-        events = np.vstack(to_pad)
-
-    events_to_local(events, config["data"]["orientation"])
 
     return per_event, events
 
