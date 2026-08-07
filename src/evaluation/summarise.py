@@ -306,8 +306,9 @@ def target_to_physical(points, config):
     point_layer_ids = find_layers(config, points, coordinates="data")
     layer_centers = get_layer_centers(config, coordinates="detector")
     mask = (points[:, :, 3] > 0) & (point_layer_ids >= 0)
+    physical_points[mask, 3] = points[mask, 3]
 
-    physical_points[mask, 2] = layer_centers[point_layer_ids[mask]]
+    physical_points[mask, 1] = layer_centers[point_layer_ids[mask]]
 
     data_low_x = config["data"]["Xmin"]
     detector_low_z = config["data"]["Zmin_in_detector"]
@@ -328,46 +329,54 @@ def target_to_physical(points, config):
     return physical_points, point_layer_ids
 
 
-class Summary:
+class ModelSummary:
     def __init__(
         self,
         config,
+        model=None,
+        sample_cells=None,
         data_part="test",
         pick_events=None,
         total_size=1_000,
         printer=print,
+        output_path=None,
     ):
         self.config = config
-        self._sampler = inference.Sampler.from_config(config)
         self.data_part = data_part
         self.pick_events = pick_events
         self.total_size = total_size
         self.printer = printer
-        reference_path = self.precalculated_reference_path()
-        if os.path.exists(reference_path):
-            self.printer(f"Loading precalculated reference from {reference_path}")
-            self.reference = np.load(reference_path)
-        else:
-            self.printer(f"Calculating reference and saving to {reference_path}")
-            self.reference = self.calculate_reference()
-            np.savez(reference_path, **self.reference)
-        self.cond = self.reference["cond"]
-        self.printer(f"Have {len(self.cond)} reference events")
-        self.samples = {}
         # generate these later as needed
+        self._cond = None
         self._points = None
         self._points_per_layer = None
+        if model is not None:
+            assert sample_cells is None
+            self.singulars = self.add_model(model, output_path=output_path)
+        elif sample_cells is not None:
+            self.singulars = self.add_sample_cells(
+                sample_cells, output_path=output_path
+            )
 
     def _make_sampling_kit(self):
         self.printer("Making sampling kit")
         sampler = inference.Sampler(self.config)
         self.printer("Getting condition from reference")
-        cond, self._points, target = sampler.get_cond(
-            self.data_part, self.pick_events, self.total_size
+        self._cond, self._points, target = sampler.get_cond(
+            self.data_part, self.pick_events, self.total_size, return_target=True
         )
-        printer("Getting points per layer from reference")
-        self._points_per_layer = inference.points_per_layer_from_target(target, config)
-        printer(f"Max points per layer: {np.max(points_per_layer)}")
+        self.printer("Getting points per layer from reference")
+        self._points_per_layer = inference.points_per_layer_from_target(
+            target, self.config
+        )
+        del target
+        self.printer(f"Max points per layer: {np.max(self._points_per_layer)}")
+
+    @property
+    def cond(self):
+        if self._cond is None:
+            self._make_sampling_kit()
+        return self._cond
 
     @property
     def points(self):
@@ -396,88 +405,69 @@ class Summary:
             output_path = cls.get_output_path_from_model_path(model_path)
             printer(f"Saving summary to {output_path}")
         config = inference.Sampler.get_config_from_model_path(model_path)
-        model_name = os.path.basename(model_path).split(".")[0]
-        this = cls(config, data_part, pick_events, total_size, printer)
-        this.add_from_model(model_name, model_path, output_path=output_path)
+        this = cls(
+            config,
+            model_path,
+            data_part=data_part,
+            pick_events=pick_events,
+            total_size=total_size,
+            printer=printer,
+            output_path=output_path,
+        )
         return this
 
-    def add_from_model(self, model_name, model, output_path=None):
+    def add_model(self, model, output_path=None):
         sampler = inference.Sampler(self.config, model)
+        total_points_to_sample = len(self.points)
+        batch_length = 32
+        batches = int(np.ceil(total_points_to_sample / batch_length))
         self.printer("Sampling the model using the reference")
-        sample = sampler.sample(self.cond, self.points)
-        self.printer(f"Sample shape: {sample.shape}")
-        self.printer("Converting to physical points")
-        physical_points, point_layer_ids = inference.sample_to_physical(
-            sample, self.points_per_layer, self.config
-        )
-        self.printer("Unshifting points")
-        physical_points = inference.unshift_points(
-            physical_points, point_layer_ids, self.cond, self.config
-        )
-        self.printer("Converting to cells")
-        cells = inference.physical_to_cells(
-            physical_points, point_layer_ids, self.config
-        )
-        self.add_sample_cells(model_name, cells, output_path=output_path)
-
-    def add_sample_cells(self, name, sample_cells, output_path=None):
-        sample_singulars = self.calculate_singulars(self.cond, sample_cells)
-        sample_comparitors = self.calculate_comparitors(sample_cells)
-        self.samples[name] = {**sample_singulars, **sample_comparitors}
+        singulars = {}
+        for i in range(batches):
+            if i % 10 == 0:
+                self.printer(f"Sampling batch {i}/{batches}")
+            start = i * batch_length
+            end = min((i + 1) * batch_length, total_points_to_sample)
+            sample = sampler.sample(self.cond[start:end], self.points[start:end])
+            physical_points, point_layer_ids = inference.sample_to_physical(
+                sample, self.points_per_layer[start:end], self.config
+            )
+            del sample
+            physical_points = inference.unshift_points(
+                physical_points, point_layer_ids, self.cond, self.config
+            )
+            cells = inference.physical_to_cells(
+                physical_points, point_layer_ids, self.config
+            )
+            del physical_points, point_layer_ids
+            new_singulars = self.calculate_singulars(self.cond[start:end], cells)
+            for key in new_singulars:
+                if key not in singulars:
+                    singulars[key] = []
+                singulars[key].append(new_singulars[key])
+        singulars = {k: np.concatenate(v, axis=0) for k, v in singulars.items()}
         if output_path is not None:
-            np.savez(output_path, **self.samples[name])
+            np.savez(output_path, **singulars)
+        return singulars
+
+    def add_sample_cells(self, sample_cells, output_path=None):
+        """
+        Assume that the user has already established this isn't too memory intensive
+        """
+        sample_singulars = self.calculate_singulars(self.cond, sample_cells)
+        if output_path is not None:
+            np.savez(output_path, **sample_singulars)
+        return sample_singulars
 
     @staticmethod
     def get_output_path_from_model_path(model_path):
         output_path = model_path.split(".")[0] + "_summary.npz"
         return output_path
 
-    def precalculated_reference_path(self):
-        dataset_name = os.path.basename(self.config["data"]["dataset_path"])
-        dataset_name = dataset_name.split(".")[0].split("{")[0]
-        out_dir = self.config["output"]["path"]
-        precalc_dir = os.path.join(out_dir, "precalculated_reference", dataset_name)
-        os.makedirs(precalc_dir, exist_ok=True)
-        file_name = f"pre{self.data_part}_Total{int(self.total_size)}"
-        if self.pick_events is not None:
-            picky = f"_Pick{self.pick_events}"
-            file_name += "".join(p for p in picky if p.isalnum())
-        else:
-            file_name += "_NoPick"
-        file_name += ".npz"
-        path = os.path.join(precalc_dir, file_name)
-        return path
-
-    def fetch_reference(self):
-        cond_columns = [
-            self.config["data"][f"{name}_key"]
-            for name in self.config["model"]["cond_features"]
-        ]
-        cond, target = read_write.read_raw_regaxes(
-            self.config,
-            part=self.data_part,
-            pick_events=self.pick_events,
-            total_size=self.total_size,
-            per_event_cols=cond_columns,
-        )
-        physical_points, point_layer_ids = target_to_physical(target, self.config)
-        physical_points = inference.unshift_points(
-            physical_points, point_layer_ids, cond, self.config
-        )
-        cells = inference.physical_to_cells(
-            physical_points, point_layer_ids, self.config
-        )
-        return cond, cells
-
-    def calculate_reference(self):
-        cond, cells = self.fetch_reference()
-        return self.calculate_singulars(cond, cells)
-
     def calculate_singulars(self, cond, cells):
         singulars = {}
         directions = cond[:, [2, 0, 1]]
         singulars["cond"] = cond
-        singulars["cells"] = cells
         singulars["pca"] = pca(cells)
         singulars["pca_top4"] = pca(cells, energy_fraction=0.04)
         singulars["event_energy"] = event_energy(cells)
@@ -495,8 +485,113 @@ class Summary:
         singulars["layer_occupancies"] = layer_occupancies(cells, self.config)
         return singulars
 
-    def calculate_comparitors(self, sample_cells):
-        reference_cells = self.reference["cells"]
-        comparitors = {}
-        comparitors["emd"] = emd(reference_cells, sample_cells)
-        return comparitors
+
+class ReferenceSummary:
+    """
+    Much less memory intensive than the model summary.
+    """
+    def __init__(
+        self,
+        config,
+        data_part="test",
+        pick_events=None,
+        total_size=1_000,
+        printer=print,
+    ):
+        self.config = config
+        self.data_part = data_part
+        self.pick_events = pick_events
+        self.total_size = total_size
+        self.printer = printer
+        reference_path = self.get_output_path()
+        if os.path.exists(reference_path):
+            self.printer(f"Loading precalculated reference from {reference_path}")
+            self.reference = np.load(reference_path)
+        else:
+            self.printer(f"Calculating reference and saving to {reference_path}")
+            self.reference = self.calculate_reference()
+            np.savez(reference_path, **self.reference)
+        self.cond = self.reference["cond"]
+        self.printer(f"Have {len(self.cond)} reference events")
+
+    def get_output_path(self):
+        dataset_name = os.path.basename(self.config["data"]["dataset_path"])
+        dataset_name = dataset_name.split(".")[0].split("{")[0]
+        out_dir = self.config["output_path"]
+        precalc_dir = os.path.join(out_dir, "precalculated_reference", dataset_name)
+        os.makedirs(precalc_dir, exist_ok=True)
+        file_name = f"pre{self.data_part}_Total{int(self.total_size)}"
+        if self.pick_events is not None:
+            picky = f"_Pick{self.pick_events}"
+            file_name += "".join(p for p in picky if p.isalnum())
+        else:
+            file_name += "_NoPick"
+        file_name += ".npz"
+        path = os.path.join(precalc_dir, file_name)
+        return path
+
+    @classmethod
+    def from_model_path(
+        cls,
+        model_path,
+        data_part="test",
+        pick_events=None,
+        total_size=1_000,
+        printer=print,
+    ):
+        config = inference.Sampler.get_config_from_model_path(model_path)
+        this = cls(
+            config,
+            data_part=data_part,
+            pick_events=pick_events,
+            total_size=total_size,
+            printer=printer,
+        )
+        return this
+
+    def fetch_reference(self):
+        cond_columns = [
+            self.config["data"][f"{name}_key"]
+            for name in self.config["model"]["cond_features"]
+        ]
+        cond, target = read_write.read_raw_regaxes(
+            self.config,
+            part=self.data_part,
+            pick_events=self.pick_events,
+            total_size=self.total_size,
+            per_event_cols=cond_columns,
+        )
+        physical_points, point_layer_ids = target_to_physical(target, self.config)
+        del target
+        physical_points = inference.unshift_points(
+            physical_points, point_layer_ids, cond, self.config
+        )
+        cells = inference.physical_to_cells(
+            physical_points, point_layer_ids, self.config
+        )
+        return cond, cells
+
+    def calculate_reference(self):
+        cond, cells = self.fetch_reference()
+        return self.calculate_singulars(cond, cells)
+
+    def calculate_singulars(self, cond, cells):
+        singulars = {}
+        directions = cond[:, [2, 0, 1]]
+        singulars["cond"] = cond
+        singulars["pca"] = pca(cells)
+        singulars["pca_top4"] = pca(cells, energy_fraction=0.04)
+        singulars["event_energy"] = event_energy(cells)
+        cell_energy_counts, cell_energy_edges = cell_energies(cells)
+        singulars["cell_energies"] = cell_energy_counts
+        singulars["cell_energies_edges"] = cell_energy_edges
+        radial_energy_counts, radial_energy_edges = radial_energy(cells, directions)
+        singulars["radial_energy"] = radial_energy_counts
+        singulars["radial_energy_edges"] = radial_energy_edges
+        singulars["layer_energies"] = layer_energies(cells, self.config)
+        singulars["event_occupancies"] = event_occupancies(cells)
+        radial_occ_counts, radial_occ_edges = radial_occupancies(cells, directions)
+        singulars["radial_occupancies"] = radial_occ_counts
+        singulars["radial_occupancies_edges"] = radial_occ_edges
+        singulars["layer_occupancies"] = layer_occupancies(cells, self.config)
+        return singulars
