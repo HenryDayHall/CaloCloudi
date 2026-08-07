@@ -2,13 +2,71 @@ from torch.utils.data import Dataset
 import warnings
 import numpy as np
 import h5py
+import showerdata
 
 from ..detector_map import floors_ceilings
 from .read_write import get_files, events_to_local
 from .transforms import preprocessing
 
 
-class PointCloudDataset(Dataset):
+class AbstractBase(Dataset):
+    @classmethod
+    def get_n_points(cls, data, axis=-1):
+        """
+        Can operate on an event, or a batch of events.
+        """
+        n_points_arr = (data[..., axis] > 0.0).sum(-1)
+        return n_points_arr
+
+    def choose_idxs(self, idx):
+        if idx > self.bs and idx < self.__len__() - self.bs:
+            idxs = slice(idx - int(self.bs / 2), idx + int(self.bs / 2))
+        elif idx < self.bs:
+            idxs = slice(idx, idx + self.bs)
+        else:
+            idxs = slice(idx - self.bs, idx)
+        return idxs
+
+    def fuzz_parallel(self, event):
+        pos_offset_x = np.random.uniform(0, self.offset, 1)
+        pos_offset_y = np.random.uniform(0, self.offset, 1)
+        event[:, :, 0] = event[:, :, 0] + pos_offset_x
+        event[:, :, 1] = event[:, :, 1] + pos_offset_y
+
+    def fuzz_perpendicular(self, event):
+        layer_bottom_pos = self.config["data"]["layer_bottom_pos"]
+        cell_thickness = self.config["data"]["cell_thickness"]
+        layer_floors, layer_ceilings = floors_ceilings(
+            layer_bottom_pos,
+            cell_thickness,
+            percent_buffer=0,
+        )
+        select_from, select_to = floors_ceilings(
+            layer_bottom_pos,
+            cell_thickness,
+            percent_buffer=0.5,
+        )
+
+        done = np.zeros(event.shape[:-1], dtype=bool)
+        # not real points don't need moving
+        done[event[..., 3] <= 0] = True
+        perpendicular_axis = 2
+
+        for i, (floor, ceiling) in enumerate(zip(layer_floors, layer_ceilings)):
+            mask = (event[..., perpendicular_axis] >= select_from[i]) & (
+                event[..., perpendicular_axis] < select_to[i]
+            )
+            event[..., perpendicular_axis][mask] = np.random.uniform(
+                floor, ceiling, mask.sum()
+            )
+            done[mask] = True
+        assert done.all()
+
+    def __len__(self):
+        return self._len
+
+
+class PointCloudDataset(AbstractBase):
     # these can be accessed without instantiating the class
     energy_scale = 1000  # MeV to GeV
 
@@ -43,8 +101,7 @@ class PointCloudDataset(Dataset):
 
         self.retain_quantized = self.config["training"]["retain_quantized"]
         self.offset = (
-            self.config["data"]["cell_size"]
-            / self.config["data"]["divisions_per_cell"]
+            self.config["data"]["cell_size"] / self.config["data"]["divisions_per_cell"]
         )
 
         self.conditioning_transform = preprocessing(self.config, "conditioning")
@@ -149,58 +206,6 @@ class PointCloudDataset(Dataset):
             is_front_padded = self._is_front_padded(check_file + 1)
         return is_front_padded
 
-    @classmethod
-    def get_n_points(cls, data, axis=-1):
-        """
-        Can operate on an event, or a batch of events.
-        """
-        n_points_arr = (data[..., axis] != 0.0).sum(1)
-        return n_points_arr
-
-    def _choose_idxs(self, idx):
-        if idx > self.bs and idx < self.__len__() - self.bs:
-            idxs = slice(idx - int(self.bs / 2), idx + int(self.bs / 2))
-        elif idx < self.bs:
-            idxs = slice(idx, idx + self.bs)
-        else:
-            idxs = slice(idx - self.bs, idx)
-        return idxs
-
-    def _fuzz_parallel(self, event):
-        pos_offset_x = np.random.uniform(0, self.offset, 1)
-        pos_offset_y = np.random.uniform(0, self.offset, 1)
-        event[:, :, 0] = event[:, :, 0] + pos_offset_x
-        event[:, :, 1] = event[:, :, 1] + pos_offset_y
-
-    def _fuzz_perpendicular(self, event):
-        layer_bottom_pos = self.config["data"]["layer_bottom_pos"]
-        cell_thickness = self.config["data"]["cell_thickness"]
-        layer_floors, layer_ceilings = floors_ceilings(
-            layer_bottom_pos,
-            cell_thickness,
-            percent_buffer=0,
-        )
-        select_from, select_to = floors_ceilings(
-            layer_bottom_pos,
-            cell_thickness,
-            percent_buffer=0.5,
-        )
-
-        done = np.zeros(event.shape[:-1], dtype=bool)
-        # not real points don't need moving
-        done[event[..., 3] <= 0] = True
-        perpendicular_axis = 2
-
-        for i, (floor, ceiling) in enumerate(zip(layer_floors, layer_ceilings)):
-            mask = (event[..., perpendicular_axis] >= select_from[i]) & (
-                event[..., perpendicular_axis] < select_to[i]
-            )
-            event[..., perpendicular_axis][mask] = np.random.uniform(
-                floor, ceiling, mask.sum()
-            )
-            done[mask] = True
-        assert done.all()
-
     def _event_processing(self, event):
         if self.config["data"]["roll_axis"]:
             event = np.moveaxis(event, -1, -2)
@@ -217,13 +222,13 @@ class PointCloudDataset(Dataset):
             event = event[:, :trim_len]
 
         if not self.retain_quantized:
-            self._fuzz_parallel(event)
-            self._fuzz_perpendicular(event)
+            self.fuzz_parallel(event)
+            self.fuzz_perpendicular(event)
 
         return event
 
     def __getitem__(self, idx):
-        idxs = self._choose_idxs(idx)
+        idxs = self.choose_idxs(idx)
         batch = {}
         for name_in_batch, name_on_disk in self.keys_to_include.items():
             padding = self._prior_event_axes[name_in_batch]
@@ -246,12 +251,9 @@ class PointCloudDataset(Dataset):
 
         return batch
 
-    def __len__(self):
-        return self._len
-
 
 class PointCloudDatasetUnordered(PointCloudDataset):
-    def _choose_idxs(self, idx):
+    def choose_idxs(self, idx):
         rng = np.random.default_rng(seed=idx)
         bs = min(self._len, self.bs)
         idxs = rng.choice(self._len, bs, replace=False)
@@ -259,10 +261,147 @@ class PointCloudDatasetUnordered(PointCloudDataset):
         return idxs
 
 
+class ShowerDataDataset(AbstractBase):
+    def __init__(
+        self,
+        config,
+        dataset_part="train",
+    ):
+        """
+        Base class for loading ShowerData files.
+        Iterable, torch.utils.data.Dataset subclass.
+
+        Parameters
+        ----------
+        config: dict
+            config...
+        """
+        self.config = config
+        file_path = self.config["data"]["dataset_path"]
+        self.keys_to_include = {
+            name: self.config["data"].get(f"{name}_key", name)
+            for name in self.config["model"]["cond_features"] + ["points"]
+        }
+        self.open_files = self._open_data_files(file_path, dataset_part)
+
+        self.max_ds_seq_len = config["training"]["max_points_per_event"]
+        self.index_list = self._make_index_list()
+        self.front_padded = False
+        self.bs = config["training"]["batch_size"]
+
+        self.retain_quantized = self.config["training"]["retain_quantized"]
+        self.offset = (
+            self.config["data"]["cell_size"] / self.config["data"]["divisions_per_cell"]
+        )
+
+        self.conditioning_transform = preprocessing(self.config, "conditioning")
+        self.features_transform = preprocessing(self.config, "features")
+        # avoid repeat calculation
+        self._len = len(self.index_list)
+
+    def _open_data_files(self, file_path, dataset_part):
+        """
+        Open all the data files, and return them.
+        We don't bother closing them, because they are
+        read-only and will be closed when the program
+        exits.
+        N.B. if we end up with memory issues,
+        we might need to rethink this.
+
+        Parameters
+        ----------
+        file_path : str
+            Path to the HDF5 file containing the dataset.
+            If n_files is > 0, then the file_path should
+            contain one or more "{}" to be formatted with
+            the file number.
+        dataset_part : str
+            Either "train", "val", or "test"
+
+        Returns
+        -------
+        list
+            List of h5py.File objects.
+        """
+        file_range_start = self.config["data"][f"{dataset_part}_range_start"]
+        file_range_end = self.config["data"][f"{dataset_part}_range_end"]
+        all_files = [
+            showerdata.ShowerDataFile(path)
+            for path in get_files(file_path, file_range_start, file_range_end)
+        ]
+        if not all_files:
+            raise FileNotFoundError(f"No files found at {file_path}")
+        return all_files
+
+    def _make_index_list(self):
+        """
+        To allow the data to be iterated in order of
+        number of points if desired, make a list of
+        indices that can be used to access the data
+        in that order.
+
+        Returns
+        -------
+        index_list : numpy.ndarray (n_points, 3)
+            Array with cols (n_points, file_idx, event_idx)
+            that can be used to access the data in order
+            of number of points.
+        """
+        index_list = []
+        for file_idx, dataset in enumerate(self.open_files):
+            n_points = self.get_n_points(dataset[:].points)
+            n_points[n_points > self.max_ds_seq_len] = self.max_ds_seq_len
+            index_list += [(n, file_idx, i) for i, n in enumerate(n_points)]
+        # sort the index list by 'n_points'
+        index_list.sort(key=lambda x: x[0])
+        index_list = np.array(index_list, dtype=int)
+        return index_list
+
+    def _event_processing(self, event):
+        # Trim padding
+        max_len = (event[:, :, 3] > 0).sum(axis=1).max()
+        trim_len = min(max_len, self.max_ds_seq_len)
+        # always back padded
+        event = event[:, :trim_len]
+
+        if not self.retain_quantized:
+            self.fuzz_parallel(event)
+            self.fuzz_perpendicular(event)
+
+        return event
+
+    def __getitem__(self, idx):
+        idxs = self.choose_idxs(idx)
+        batch = {}
+        for name_in_batch, name_on_disk in self.keys_to_include.items():
+            data = np.array(
+                [
+                    getattr(self.open_files[file_n][name_on_disk], name_on_disk)[
+                        event_n
+                    ]
+                    for n_pts, file_n, event_n in self.index_list[idxs]
+                ]
+            )
+
+            if name_in_batch == "points":
+                data = self._event_processing(data)
+
+            if len(data.shape) == 1:
+                data = data[..., np.newaxis]
+            batch[name_in_batch] = data
+
+        # expose the number of points per event
+        batch["n_points"] = self.index_list[idxs, 0, np.newaxis]
+
+        return batch
+
+
 def from_config(config, dataset_part="train"):
     if config["data"]["format"] == "padded":
         return PointCloudDataset(config, dataset_part=dataset_part)
     elif config["data"]["format"] == "padded_unordered":
         return PointCloudDatasetUnordered(config, dataset_part=dataset_part)
+    elif config["data"]["format"] == "showerdata":
+        return ShowerDataDataset(config, dataset_part=dataset_part)
     else:
         raise NotImplementedError
