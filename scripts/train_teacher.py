@@ -8,7 +8,7 @@ from torch.nn.utils import clip_grad_norm_
 
 from src.training.teacher import init_from_pretrained, init_from_scratch
 
-#user_input = "/home/dayhallh/training/splitCC/CaloClouds_diffusion/config/default.yaml"
+# user_input = "/home/dayhallh/training/splitCC/CaloClouds_diffusion/config/default.yaml"
 user_input = sys.argv[1]
 
 if user_input.endswith(".yaml"):
@@ -59,6 +59,7 @@ last_checkpoint_time = time.time()
 end_epoch = config["training"]["end_epoch"]
 
 logger.add_text(f"Training from epoch {start_epoch + 1} to {end_epoch}")
+logger.do_validation(model)
 
 checkpoint_time_interval_seconds = (
     config["training"]["checkpoint_time_interval_min"] * 60
@@ -110,17 +111,23 @@ for epoch in range(start_epoch + 1, end_epoch + 1):
         )
         if n_updates % 100 == 0:
             logger.save()
+        if n_updates % config["training"]["validation_interval"] == 0:
+            logger.do_validation(model)
+            logger.save()
 
         if checkpoint_time_interval_seconds > 0:
             if time_now - last_checkpoint_time > checkpoint_time_interval_seconds:
+                logger.do_validation(model)
                 logger.checkpoint_model(**checkpointable)
                 logger.save()
                 last_checkpoint_time = time_now
         if checkpoint_batch_interval > 0:
             if n_updates % checkpoint_batch_interval == 0:
+                logger.do_validation(model)
                 logger.checkpoint_model(**checkpointable)
                 logger.save()
     logger.checkpoint_model(**checkpointable)
+    logger.do_validation(model)
     logger.save()
     last_checkpoint_time = time.time()
 logger.add_text("Training complete")

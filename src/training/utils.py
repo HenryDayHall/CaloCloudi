@@ -21,12 +21,22 @@ class Logger:
         "time",
     ]
 
-    def __init__(self, config_path, existing_log_dir=None, chatty=True):
+    def __init__(
+        self,
+        config_path,
+        existing_log_dir=None,
+        chatty=True,
+    ):
+        self.text = ""
+        self.chatty = chatty
+
+        self.add_text(f"Loading config from {config_path}")
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
         self.values = {name: [] for name in self.per_step_log}
-        self.text = ""
-        self.chatty = chatty
+
+        self.validation_functions_dict = {}
+        self.validation_values = {"n_events": []}
 
         if existing_log_dir is None:
             self.log_dir = self.setup_dir()
@@ -35,6 +45,12 @@ class Logger:
             self._load()
         self.checkpoint_dir = os.path.join(self.log_dir, "checkpoints")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
+
+    def add_validation_function(self, name, function):
+        self.add_text(f"Adding validation function for {name}")
+        self.validation_functions_dict[name] = function
+        if name not in self.validation_values:
+            self.validation_values[name] = []
 
     def setup_dir(self):
         datestamp = time.strftime("%Y_%m_%d__%H_%M_%S")
@@ -62,8 +78,11 @@ class Logger:
             for line in lines:
                 print(line)
 
-    def do_validation(self):
-        pass
+    def do_validation(self, model):
+        self.validation_values["n_events"].append(self.values["n_events"][-1])
+        for name, function in self.validation_functions_dict.items():
+            self.add_text(f"Running validation for {name}")
+            self.validation_values[name].append(function(model))
 
     def checkpoint_model(self, model, ema_model, **kwargs):
         timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
@@ -78,6 +97,10 @@ class Logger:
     def save(self):
         for name in self.per_step_log:
             np.save(os.path.join(self.log_dir, name), self.values[name])
+        for name in self.validation_values:
+            np.save(
+                os.path.join(self.log_dir, f"val_{name}"), self.validation_values[name]
+            )
         with open(os.path.join(self.log_dir, "logs.txt"), "w") as f:
             f.write(self.text)
 
@@ -90,10 +113,19 @@ class Logger:
             self.text = f.read()
 
     @classmethod
-    def from_model_path(cls, model_path):
+    def from_model_path(cls, model_path, validation_functions_dict=None):
         log_dir = os.path.dirname(os.path.dirname(model_path))
         config = yaml.safe_load(open(os.path.join(log_dir, "config.yaml")))
-        logger = cls(config, existing_log_dir=log_dir)
+        logger = cls(
+            config,
+            existing_log_dir=log_dir,
+        )
+        for name, function in validation_functions_dict.items():
+            logger.add_validation_function(name, function)
+        for name in logger.validation_values:
+            logger.validation_values[name] = np.load(
+                os.path.join(logger.log_dir, f"val_{name}")
+            )
         return logger
 
 

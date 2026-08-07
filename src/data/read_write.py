@@ -71,7 +71,7 @@ def get_files(dataset_path, file_range_start, file_range_end):
 
 
 @lru_cache(maxsize=1)
-def get_n_events(dataset_path, file_range_start, file_range_end, dataset_format):
+def get_n_events(dataset_path, file_range_start, file_range_end, dataset_format, points_key):
     """
     Get the number of events in the dataset
 
@@ -97,9 +97,9 @@ def get_n_events(dataset_path, file_range_start, file_range_end, dataset_format)
             n_events.append(len(loaded))
         else:
             with h5py.File(file_name, "r") as on_disk:
-                events_array_shape = on_disk["events"].shape
+                events_array_shape = on_disk[points_key].shape
                 if np.sum(events_array_shape):
-                    n_events.append(on_disk["events"].shape[-3])
+                    n_events.append(on_disk[points_key].shape[-3])
     if len(n_events) < 2:
         n_events = np.sum(n_events)
     return n_events
@@ -113,6 +113,7 @@ def n_events_in_part(config, part):
         file_range_start,
         file_range_end,
         config["data"]["format"],
+        config["data"]["points_key"],
     )
     return n_events
 
@@ -294,6 +295,7 @@ def read_raw_regaxes(
         file_range_start,
         file_range_end,
         config["data"]["format"],
+        config["data"]["points_key"],
     )
     n_total_events = np.sum(n_events)
     total_size = min(100 if total_size is None else total_size, n_total_events)
@@ -394,7 +396,7 @@ def _read_padded(config, file_names, file_indices, per_event_cols):
     events = []
     for name, indices in zip(file_names, file_indices):
         with h5py.File(name, "r") as dataset:
-            events_here = dataset["events"]
+            events_here = dataset[config["data"]["points_key"]]
             # treat empty files
             if len(events_here) == 0:
                 continue
