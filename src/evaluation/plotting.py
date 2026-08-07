@@ -12,6 +12,17 @@ nice_hex = [
 ]
 
 
+def center_arrow(ax, dx, dy, frac=0.1, **arrowprops):
+    bb = ax.get_window_extent()          # axes size in pixels
+    r = bb.width / bb.height
+    ux, uy = np.array([dx, dy]) / np.hypot(dx, dy)
+    tip = (0.5 + frac * ux, 0.5 + frac * uy * r)
+    ax.annotate("", xy=tip, xytext=(0.5, 0.5),
+                xycoords=ax.transAxes, textcoords=ax.transAxes,
+                arrowprops=dict(arrowstyle="-|>",
+                                color="k", **arrowprops))
+
+
 def plot_line_with_devation(
     ax,
     colour,
