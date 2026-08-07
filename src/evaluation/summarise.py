@@ -324,7 +324,7 @@ def target_to_physical(points, config):
     detector_x_range = config["data"]["Xmax_in_detector"] - detector_low_x
     shift_1 = detector_low_x - data_low_y
     scale_1 = detector_x_range / data_y_range
-    physical_points[mask, 0] = (points[mask, 2] + shift_1) * scale_1
+    physical_points[mask, 0] = (points[mask, 1] + shift_1) * scale_1
 
     return physical_points, point_layer_ids
 

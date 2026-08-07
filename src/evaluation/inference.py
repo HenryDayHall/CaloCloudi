@@ -62,7 +62,7 @@ class Sampler:
         self, data_part, pick_events=None, total_size=None, return_target=False
     ):
         if not isinstance(pick_events, collections.abc.Hashable):
-            pick_events = (int(i) for i in pick_events)
+            pick_events = tuple(int(i) for i in pick_events)
         if total_size is None and pick_events is None:
             total_size = -1
         return self._get_cond(data_part, pick_events, total_size, return_target)
@@ -71,6 +71,9 @@ class Sampler:
     def _get_cond(
         self, data_part, pick_events=None, total_size=None, return_target=False
     ):
+        if isinstance(pick_events, tuple):
+            pick_events = list(pick_events)
+
         per_event, target = read_write.read_raw_regaxes(
             self.config,
             part=data_part,
@@ -149,7 +152,7 @@ def sample_to_physical(points, points_per_layer, config):
         axis=-1,
     ).astype(int)
     for layer in range(n_layers):
-        layer_mask = (points_by_height > cumulative_points_per_layer[:, [layer]]) & (
+        layer_mask = (points_by_height >= cumulative_points_per_layer[:, [layer]]) & (
             points_by_height < cumulative_points_per_layer[:, [layer + 1]]
         )
         physical_points[layer_mask, 1] = layer_centers[layer]
@@ -177,22 +180,29 @@ def sample_to_physical(points, points_per_layer, config):
 
 
 def unshift_points(physical_points, point_layer_ids, cond_data_coords, config):
-    direction_vectors = cond_data_coords[:, [2, 0, 1]]
+    # cond -> (e, x, y, z) in data
+    # cond -> (e, z, x, y) in physical
+    direction_vectors = cond_data_coords[:, 1:]
     normalised_direction_vectors = direction_vectors / np.linalg.norm(
         direction_vectors, axis=1, keepdims=True
     )
     layer_centers = get_layer_centers(config, coordinates="detector")
-    x_shift_per_layer = layer_centers[:, None] * normalised_direction_vectors[None, :, 0]
-    z_shift_per_layer = layer_centers[:, None] * normalised_direction_vectors[None, :, 2]
+    layer_centers -= layer_centers[0]
+    detetor_x = normalised_direction_vectors[:, 1]
+    detetor_z = normalised_direction_vectors[:, 0]
+    x_shift_per_layer = layer_centers[:, None] * detetor_x[None, :]
+    z_shift_per_layer = layer_centers[:, None] * detetor_z[None, :]
 
     n_events = physical_points.shape[0]
     real_points = (physical_points[:, :, 3] > 0) & (point_layer_ids >= 0)
 
     x_shifts = x_shift_per_layer[point_layer_ids, np.arange(n_events)[:, None]]
-    physical_points[real_points, 0] -= x_shifts[real_points]
+    physical_points[real_points, 0] += x_shifts[real_points]
 
     z_shifts = z_shift_per_layer[point_layer_ids, np.arange(n_events)[:, None]]
-    physical_points[real_points, 2] -= z_shifts[real_points]
+    physical_points[real_points, 2] += z_shifts[real_points]
+
+    physical_points[~real_points] = 0
 
     return physical_points
 
