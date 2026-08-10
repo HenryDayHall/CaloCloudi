@@ -1,5 +1,10 @@
 # Tests
 
+Please note, these tests are written by Claude.
+The test the project at a point in time that it was known to be running smoothly.
+However, they test it without real oversight, so if you feel it's appropriate to break one,
+the scripts in the scripts folder are the ultimate test for consequences.
+
 ```bash
 pip install pytest pytest-mock
 pytest                      # from the repo root
