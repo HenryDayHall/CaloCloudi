@@ -8,7 +8,6 @@ from torch.nn.utils import clip_grad_norm_
 
 from src.training.teacher import init_from_pretrained, init_from_scratch
 
-# user_input = "/home/dayhallh/training/splitCC/CaloClouds_diffusion/config/default.yaml"
 user_input = sys.argv[1]
 
 if user_input.endswith(".yaml"):

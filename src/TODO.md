@@ -1,6 +1,6 @@
-- Check that the training is actually using the preprocessing
-- need to finish the transform to cells
-- need to make standard plots
-- need to get a validation step into the training
+- add some basic plots to the validation steps (maybe only some validation steps)
+- need to check out the ema model
 - need to get the student model (distilled) training
-- other empty files
+- maybe fix emd?
+
+- write a lot of unit tests (maybe claude can do that)

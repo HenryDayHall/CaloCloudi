@@ -7,6 +7,8 @@ from ..data import read_write
 
 
 class ValidationChecker:
+    batch_size = 32
+
     def __init__(
         self,
         config,
@@ -14,14 +16,12 @@ class ValidationChecker:
         preprocess_conditioning,
         preprocess_features,
         validation_size=1_000,
-        batch_size=32,
     ):
         self.config = config
         self.device = config["device"]
         self.dtype = getattr(torch, config["training"]["dtype"])
         self.sample_density = sample_density
-        self.batch_size = batch_size
-        self.n_batches = validation_size // batch_size
+        self.n_batches = validation_size // self.batch_size
         cond_feature_names = config["model"]["cond_features"]
         names_in_data = [config["data"][f"{name}_key"] for name in cond_feature_names]
         cond, target = read_write.read_raw_regaxes(
@@ -35,6 +35,11 @@ class ValidationChecker:
         )
         self.noise = torch.randn_like(self.target).to(self.device, dtype=self.dtype)
         self.sigma = sample_density([self.target.shape[0]], device=self.device)
+        self.callables = {"loss": self.loss}
+
+    def total_real_val_points(self):
+        n_events = self.batch_size * self.n_batches
+        return (self.target[:n_events, :, 3] > 0).sum()
 
     def loss(self, model):
         model.eval()
@@ -43,8 +48,6 @@ class ValidationChecker:
             for batch in range(self.n_batches):
                 start = batch * self.batch_size
                 end = (batch + 1) * self.batch_size
-                if end > self.target.shape[0]:
-                    break
                 here = model.get_loss(
                     self.target[start:end],
                     self.noise[start:end],
@@ -55,6 +58,12 @@ class ValidationChecker:
         model.train()
         found = torch.tensor(found).cpu().numpy()
         return found
+
+    def get_info(self):
+        return {
+            "batch_size": self.batch_size,
+            "total_real_points": self.total_real_val_points(),
+        }
 
 
 def common(config):
@@ -80,9 +89,6 @@ def common(config):
         preprocess_conditioning,
         preprocess_features,
     )
-    validation_functions_dict = {
-        "loss": validation_checker.loss,
-    }
     setup_dict = {
         "dataloader": dataloader,
         "model": model,
@@ -93,15 +99,16 @@ def common(config):
         "preprocess_conditioning": preprocess_conditioning,
         "preprocess_features": preprocess_features,
     }
-    return setup_dict, validation_functions_dict
+    return setup_dict, validation_checker
 
 
 def init_from_scratch(config_path):
     logger = utils.Logger(config_path)
     config = logger.config
-    setup_dict, validation_functions_dict = common(config)
-    for name, function in validation_functions_dict.items():
+    setup_dict, validation_checker = common(config)
+    for name, function in validation_checker.callables.items():
         logger.add_validation_function(name, function)
+    logger.add_text("Info from validation checker:\n" + validation_checker.get_info())
     scheduler = utils.get_scheduler(config, setup_dict["optimiser"], 0)
     setup_dict["logger"] = logger
     setup_dict["scheduler"] = scheduler
