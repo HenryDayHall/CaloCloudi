@@ -64,17 +64,75 @@ class Sequence(Transformation):
 
 
 class Partial(Transformation):
+    """Apply a separate transformation to each slice along one axis.
+
+    ``split_indices`` are the boundaries between slices, as for
+    :func:`torch.tensor_split`: ``n`` indices describe ``n + 1`` slices, and
+    exactly that many ``components`` must be given.  Each component is either a
+    :class:`Transformation`, a specification for :func:`compose`, or ``None``
+    to leave that slice unchanged.
+
+    The transformed slices are concatenated into a new tensor, so the input is
+    not modified and dtypes are promoted rather than truncated.  Components are
+    held in a :class:`~torch.nn.ModuleList`, so nested buffers take part in
+    ``state_dict``, ``.to()`` and ``.parameters()``, and ``fit`` is passed down
+    to them along with the matching slice of the mask.
+
+    Parameters
+    ----------
+    split_indices : list of int
+        Strictly increasing, positive slice boundaries along ``axis``.
+    components : list
+        One entry per slice.
+    axis : int, optional
+        The axis to split, default the last one.
+
+    Raises
+    ------
+    ValueError
+        If ``split_indices`` are not strictly increasing positive integers, or
+        if the number of ``components`` does not match the number of slices.
+    TypeError
+        If a component is a module that is not a :class:`Transformation`.
+    """
+
     def __init__(
         self,
         split_indices: list[int],
         components: list[Transformation | list | dict | None],
         axis: int = -1,
-    ):
+    ) -> None:
         super().__init__()
-        self.split_indices = split_indices
-        self.components = [self._build_component(c) for c in components]
+        self.split_indices = self._check_split_indices(split_indices)
         self.axis = axis
-        self._setup_splits()
+        components = list(components)
+        expected = len(self.split_indices) + 1
+        if len(components) != expected:
+            raise ValueError(
+                f"split_indices={self.split_indices} describes {expected} slices "
+                f"along axis {axis}, but {len(components)} components were given"
+            )
+        self.components = nn.ModuleList(
+            self._build_component(component) for component in components
+        )
+
+    @staticmethod
+    def _check_split_indices(split_indices: list[int]) -> list[int]:
+        indices = list(split_indices)
+        for index in indices:
+            if isinstance(index, bool) or not isinstance(index, int):
+                raise TypeError(f"split_indices must be integers, got {index!r}")
+        if any(index < 1 for index in indices):
+            raise ValueError(
+                f"split_indices must be positive, got {indices}; an index of 0 "
+                "would make an empty first slice"
+            )
+        if any(later <= earlier for earlier, later in zip(indices, indices[1:])):
+            raise ValueError(
+                f"split_indices must be strictly increasing, got {indices}; "
+                "repeated indices would make empty slices"
+            )
+        return indices
 
     @staticmethod
     def _build_component(
@@ -82,29 +140,55 @@ class Partial(Transformation):
     ) -> Transformation:
         if isinstance(component, Transformation):
             return component
+        if isinstance(component, nn.Module):
+            raise TypeError(
+                "components must be Transformations, got "
+                f"{type(component).__name__}"
+            )
         return compose(component)
 
-    def _setup_splits(self):
-        self._splits = []
-        starts = [0] + self.split_indices
-        ends = self.split_indices + [None]
-        for start, end in zip(starts, ends):
-            here = slice(start, end)
-            if self.axis < 0:
-                split = [Ellipsis, here] + [slice(None)] * (-self.axis - 1)
-            else:
-                split = [slice(None)] * self.axis + [here]
-            self._splits.append(split)
+    def _chunk(self, x: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """Split ``x`` into one view per component, checking it is big enough."""
+        if not -x.ndim <= self.axis < x.ndim:
+            raise ValueError(
+                f"axis {self.axis} is out of range for a {x.ndim}d tensor"
+            )
+        length = x.shape[self.axis]
+        if self.split_indices and self.split_indices[-1] >= length:
+            raise ValueError(
+                f"split_indices={self.split_indices} do not fit along axis "
+                f"{self.axis}, which has length {length}"
+            )
+        return torch.tensor_split(x, self.split_indices, dim=self.axis)
 
-    def forward(self, x: torch.Tensor):
-        for split, component in zip(self._splits, self.components):
-            x[*split] = component.forward(x[*split])
-        return x
+    def fit(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+        chunks = self._chunk(x)
+        masks = self._chunk(mask) if mask is not None else [None] * len(chunks)
+        return torch.cat(
+            [
+                component.fit(chunk, chunk_mask)
+                for component, chunk, chunk_mask in zip(self.components, chunks, masks)
+            ],
+            dim=self.axis,
+        )
 
-    def inverse(self, x: torch.Tensor):
-        for split, component in zip(self._splits, self.components):
-            x[*split] = component.inverse(x[*split])
-        return x
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.cat(
+            [
+                component.forward(chunk)
+                for component, chunk in zip(self.components, self._chunk(x))
+            ],
+            dim=self.axis,
+        )
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.cat(
+            [
+                component.inverse(chunk)
+                for component, chunk in zip(self.components, self._chunk(x))
+            ],
+            dim=self.axis,
+        )
 
 
 class Identity(Transformation):
@@ -222,27 +306,7 @@ class Dequantize(Transformation):
 
 
 def compose(transformation: list[list[str | dict | list | None]] | None) -> Sequence:
-    """Build a :class:`Sequence` of transformations from a specification.
-
-    Parameters
-    ----------
-    transformation : list of list or None
-        A list of transformation specifications. Each element is a list where
-        the first item is the transformation name and the optional second item
-        is either a list of positional arguments or a dict of keyword
-        arguments. If ``None``, an identity transformation is returned.
-
-    Returns
-    -------
-    Sequence
-        The composed sequence of transformations.
-
-    Raises
-    ------
-    ValueError
-        If a transformation name is invalid or its arguments are not a list or
-        a dict.
-    """
+    """Build a :class:`Sequence` of transformations from a specification."""
     if transformation is None:
         return Sequence([Identity()])
     trafo_list = []
@@ -269,24 +333,7 @@ def compose(transformation: list[list[str | dict | list | None]] | None) -> Sequ
 
 
 def _resolve_value(configs: dict, value):
-    """Recursively resolve config keys within ``value``.
-
-    A ``value`` that is a list of strings forming a valid path into ``configs``
-    is replaced by the value found there. Otherwise ``value`` is treated as a
-    raw value or a container to recurse into.
-
-    Parameters
-    ----------
-    configs : dict
-        Nested configuration dictionary.
-    value : object
-        The value to resolve.
-
-    Returns
-    -------
-    object
-        The resolved value.
-    """
+    """Recursively resolve config keys within ``value``."""
     if not hasattr(value, "__iter__"):
         return value
     try:
@@ -299,21 +346,7 @@ def _resolve_value(configs: dict, value):
 
 
 def leaf_like(value):
-    """Return ``True`` if ``value`` is a leaf of the transformation structure.
-
-    A leaf is either a non-iterable value or a list containing only leaves
-    (i.e. a list of strings representing a config key path).
-
-    Parameters
-    ----------
-    value : object
-        The value to check.
-
-    Returns
-    -------
-    bool
-        Whether ``value`` should be treated as a leaf.
-    """
+    """Return ``True`` if ``value`` is a leaf of the transformation structure."""
     if not hasattr(value, "__iter__"):
         return True
     if isinstance(value, list):
@@ -321,29 +354,8 @@ def leaf_like(value):
     return isinstance(value, str)
 
 
-def fetch_values(
-    configs: dict,
-    nested_iterable,
-):
-    """Recursively resolve config keys within a nested structure.
-
-    The ``nested_iterable`` describes a transformation (or part of one) and may
-    contain nested lists and dicts. Any leaf that is a list of strings forming a
-    valid path into ``configs`` is replaced by the value found there. Raw values
-    are left untouched.
-
-    Parameters
-    ----------
-    configs : dict
-        Nested configuration dictionary.
-    nested_iterable : object
-        The structure to resolve. May contain lists, dicts, and leaf values.
-
-    Returns
-    -------
-    object
-        The structure with config keys replaced by their values.
-    """
+def fetch_values(configs: dict, nested_iterable):
+    """Recursively resolve config keys within a nested structure."""
     if leaf_like(nested_iterable):
         return _resolve_value(configs, nested_iterable)
     if isinstance(nested_iterable, dict):
@@ -357,21 +369,7 @@ def fetch_values(
 
 
 def preprocessing(configs, part):
-    """Build the preprocessing transformation for a given part.
-
-    Parameters
-    ----------
-    configs : dict
-        Nested configuration dictionary containing a ``"preprocessing"`` entry.
-    part : str
-        The part of the preprocessing to build (e.g. ``"features"`` or
-        ``"conditioning"``).
-
-    Returns
-    -------
-    Sequence
-        The composed preprocessing transformation with config keys resolved.
-    """
+    """Build the preprocessing transformation for a given part."""
     transformations = configs["preprocessing"][part]
     transformations = fetch_values(configs, transformations)
     return compose(transformations)

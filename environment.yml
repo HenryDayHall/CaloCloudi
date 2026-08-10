@@ -41,6 +41,6 @@ dependencies:
   # e.g. NATTEN, flash-attn, or custom kernels. Match the wheel's CUDA
   # version to avoid subtle mismatches.
   # - cuda-toolkit=12.6   # from the nvidia channel; add `- nvidia` to channels
-
-  - pip:
-      - -r requirements.txt
+  #
+  #  - pip:
+  #      - -r requirements.txt

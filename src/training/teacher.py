@@ -108,7 +108,7 @@ def init_from_scratch(config_path):
     setup_dict, validation_checker = common(config)
     for name, function in validation_checker.callables.items():
         logger.add_validation_function(name, function)
-    logger.add_text("Info from validation checker:\n" + validation_checker.get_info())
+    logger.add_text("Info from validation checker:\n" + str(validation_checker.get_info()))
     scheduler = utils.get_scheduler(config, setup_dict["optimiser"], 0)
     setup_dict["logger"] = logger
     setup_dict["scheduler"] = scheduler
