@@ -3,7 +3,6 @@ on:
     push:
         branches:
             - main
-            - proto_main
     pull_request:
         branches:
             - main
@@ -25,4 +24,4 @@ jobs:
             - name: Get submodules
               run: git submodule update --init --recursive
             - name: Run tests with pytest
-              run: pytest test/
+              run: pytest tests/
