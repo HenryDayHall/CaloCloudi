@@ -1,3 +1,10 @@
+[![Run python tests](https://github.com/HenryDayHall/CaloCloudi/actions/workflows/ci.yml/badge.svg)](https://github.com/HenryDayHall/CaloCloudi/actions/workflows/ci.yml)
+[![cov](https://HenryDayHall.github.io/CaloCloudi/badges/coverage.svg)](https://github.com/HenryDayHall/CaloCloudi/actions)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
+# CaloCloudi; CaloClouds diffusion
+
+
 # installation
 
 Gotta have setuptools==69.0.3
