@@ -27,7 +27,7 @@ def confine_to_box(configs, X, Y, Z, E, detector_coords=True):
         Ymin = configs["detector"]["layer_bottom_pos"][0]
         Ymax = (
             configs["detector"]["layer_bottom_pos"][-1]
-            + configs["data"]["cell_thickness"]
+            + configs["detector"]["cell_thickness"]
         )
         Zmin = configs["data"]["Zmin_in_detector"]
         Zmax = configs["data"]["Zmax_in_detector"]

@@ -112,8 +112,8 @@ training:
     betas: [0.9, 0.999]
     eps: 0.00000001
   end_epoch: 100
-  start_lr: 0.001
-  end_lr: 0.00001
+  start_lr_multiplier: 1
+  end_lr_multiplier: 0.001
   ema_power: 0.6667
   ema_max_value: 0.9999
   max_grad_norm: 10.0

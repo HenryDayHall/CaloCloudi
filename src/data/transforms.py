@@ -334,11 +334,13 @@ def compose(transformation: list[list[str | dict | list | None]] | None) -> Sequ
 
 def _resolve_value(configs: dict, value):
     """Recursively resolve config keys within ``value``."""
-    if not hasattr(value, "__iter__"):
+    if (not hasattr(value, "__iter__")) or isinstance(value, str):
         return value
     try:
         part = configs
         for key in value:
+            if not isinstance(key, str):
+                return value
             part = part[key]
         return part
     except KeyError:

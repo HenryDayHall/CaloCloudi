@@ -4,9 +4,26 @@ import yaml
 import numpy as np
 import collections
 from functools import lru_cache
+from contextlib import contextmanager
 from ..diffusion import Diffusion
 from ..data import transforms, read_write
 from ..detector_map import create_map, find_layers, get_layer_centers
+
+
+@contextmanager
+def evaluating(net):
+    '''
+    Temporarily switch to evaluation mode.
+    Attribution; Christoph Heindl
+    https://discuss.pytorch.org/t/opinion-eval-should-be-a-context-manager/18998/3
+    '''
+    istrain = net.training
+    try:
+        net.eval()
+        yield net
+    finally:
+        if istrain:
+            net.train()
 
 
 class Sampler:
@@ -25,7 +42,6 @@ class Sampler:
             self.model = model
         if model is not None:
             self.model.to(config["device"], dtype=self.datatype)
-            self.model.eval().requires_grad_(False)
         self.preprocess_conditioning = transforms.preprocessing(config, "conditioning")
         self.preprocess_features = transforms.preprocessing(config, "features")
 
@@ -42,17 +58,18 @@ class Sampler:
     def update_model(self, model):
         self.model = model
         self.model.to(self.config["device"], dtype=self.datatype)
-        self.model.eval().requires_grad_(False)
 
     def sample(self, cond, num_points):
         cond = torch.from_numpy(cond).to(self.config["device"], dtype=self.datatype)
         max_points = int(np.max(num_points))
         preprocessed_cond = self.preprocess_conditioning.forward(cond)
-        output = self.model.sample(preprocessed_cond, max_points)
+        with evaluating(self.model):
+            with torch.no_grad():
+                output = self.model.sample(preprocessed_cond, max_points)
         restored_output = self.preprocess_features.inverse(output)
         restored_output = restored_output.cpu().numpy()
         energies = restored_output[:, :, 3]
-        energy_order = np.argsort(np.argsort(np.argsort(energies, axis=1)))
+        energy_order = np.argsort(np.argsort(energies, axis=1))
         remove_from_event = max_points - num_points
         remove = energy_order < remove_from_event[:, None]
         restored_output[remove] = 0
@@ -135,7 +152,7 @@ def sample_to_physical(points, points_per_layer, config):
     total_points_requested = points_per_layer.sum(1)
     point_energy = points[:, :, 3]
     order_by_energy = np.argsort(np.argsort(point_energy, axis=1))
-    num_to_remove = points.shape[1] - total_points_requested
+    num_to_remove = np.clip(points.shape[1] - total_points_requested, 0, None)
     remove_mask = order_by_energy < num_to_remove[:, None]
 
     physical_points[~remove_mask, 3] = points[~remove_mask, 3]
@@ -182,6 +199,10 @@ def sample_to_physical(points, points_per_layer, config):
 
 
 def unshift_points(physical_points, point_layer_ids, cond_data_coords, config):
+    # defensive programming
+    n_events = physical_points.shape[0]
+    assert cond_data_coords.shape[0] == n_events
+    assert point_layer_ids.shape[0] == n_events
     # cond -> (e, x, y, z) in data
     # cond -> (e, z, x, y) in physical
     direction_vectors = cond_data_coords[:, 1:4]

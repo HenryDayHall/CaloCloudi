@@ -1,12 +1,10 @@
 from torch.utils.data import Dataset
-import warnings
 import numpy as np
 import h5py
 import showerdata
 
 from ..detector_map import floors_ceilings
 from .read_write import get_files, events_to_local
-from .transforms import preprocessing
 
 
 class AbstractBase(Dataset):
@@ -28,13 +26,14 @@ class AbstractBase(Dataset):
         return idxs
 
     def fuzz_parallel(self, event):
-        pos_offset_x = np.random.uniform(0, self.offset, 1)
-        pos_offset_y = np.random.uniform(0, self.offset, 1)
+        shape = event.shape[:2]
+        pos_offset_x = np.random.uniform(-self.offset * 0.5, self.offset * 0.5, shape)
+        pos_offset_y = np.random.uniform(-self.offset * 0.5, self.offset * 0.5, shape)
         event[:, :, 0] = event[:, :, 0] + pos_offset_x
         event[:, :, 1] = event[:, :, 1] + pos_offset_y
 
     def fuzz_perpendicular(self, event):
-        layer_bottom_pos = self.config["data"]["layer_bottom_pos"]
+        layer_bottom_pos = np.array(self.config["data"]["layer_bottom_pos"])
         cell_thickness = self.config["data"]["cell_thickness"]
         layer_floors, layer_ceilings = floors_ceilings(
             layer_bottom_pos,
@@ -60,7 +59,6 @@ class AbstractBase(Dataset):
                 floor, ceiling, mask.sum()
             )
             done[mask] = True
-        assert done.all()
 
     def __len__(self):
         return self._len
@@ -104,8 +102,6 @@ class PointCloudDataset(AbstractBase):
             self.config["data"]["cell_size"] / self.config["data"]["divisions_per_cell"]
         )
 
-        self.conditioning_transform = preprocessing(self.config, "conditioning")
-        self.features_transform = preprocessing(self.config, "features")
         # avoid repeat calculation
         self._len = len(self.index_list)
 
@@ -199,11 +195,10 @@ class PointCloudDataset(AbstractBase):
             is_front_padded = True
         elif padding == "back":
             is_front_padded = False
-        elif check_file >= len(self.open_files) - 1:
-            # stop before we run out of files to check
-            is_front_padded = False
         else:
-            is_front_padded = self._is_front_padded(check_file + 1)
+            raise ValueError(
+                f"padding must be 'front' or 'back', not {padding}"
+            )
         return is_front_padded
 
     def _event_processing(self, event):
@@ -294,8 +289,6 @@ class ShowerDataDataset(AbstractBase):
             self.config["data"]["cell_size"] / self.config["data"]["divisions_per_cell"]
         )
 
-        self.conditioning_transform = preprocessing(self.config, "conditioning")
-        self.features_transform = preprocessing(self.config, "features")
         # avoid repeat calculation
         self._len = len(self.index_list)
 

@@ -1,3 +1,7 @@
+# installation
+
+Gotta have setuptools==69.0.3
+
 # to use
 
 

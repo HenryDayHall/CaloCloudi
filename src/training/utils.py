@@ -55,8 +55,7 @@ class Logger:
     def setup_dir(self):
         datestamp = time.strftime("%Y_%m_%d__%H_%M_%S")
         log_dir = os.path.join(self.config["output_path"], "logs", datestamp)
-        assert not os.path.exists(log_dir)
-        os.makedirs(log_dir, exist_ok=True)
+        os.makedirs(log_dir, exist_ok=False)
         with open(os.path.join(log_dir, "config.yaml"), "w") as f:
             yaml.dump(self.config, f)
         return log_dir
@@ -73,7 +72,6 @@ class Logger:
         lines = text.split("\n")
         for line in lines:
             self.text += f"{timestamp}: {line}\n"
-        self.text += "\n" + "\n".join(lines)
         if self.chatty:
             for line in lines:
                 print(line)
@@ -106,7 +104,9 @@ class Logger:
 
     def _load(self):
         for name in self.per_step_log:
-            self.values[name] = np.load(os.path.join(self.log_dir, name))
+            self.values[name] = np.load(
+                os.path.join(self.log_dir, name + ".npy")
+            ).tolist()
         with open(os.path.join(self.log_dir, "config.yaml"), "r") as f:
             self.config = yaml.safe_load(f)
         with open(os.path.join(self.log_dir, "logs.txt"), "r") as f:
@@ -115,17 +115,18 @@ class Logger:
     @classmethod
     def from_model_path(cls, model_path, validation_functions_dict=None):
         log_dir = os.path.dirname(os.path.dirname(model_path))
-        config = yaml.safe_load(open(os.path.join(log_dir, "config.yaml")))
+        config_path = os.path.join(log_dir, "config.yaml")
         logger = cls(
-            config,
+            config_path,
             existing_log_dir=log_dir,
         )
-        for name, function in validation_functions_dict.items():
-            logger.add_validation_function(name, function)
-        for name in logger.validation_values:
-            logger.validation_values[name] = np.load(
-                os.path.join(logger.log_dir, f"val_{name}")
-            )
+        if validation_functions_dict is not None:
+            for name, function in validation_functions_dict.items():
+                logger.add_validation_function(name, function)
+            for name in logger.validation_values:
+                logger.validation_values[name] = np.load(
+                    os.path.join(logger.log_dir, f"val_{name}")
+                )
         return logger
 
 
@@ -134,7 +135,7 @@ def get_dataloader(config):
     dataloader = DataLoader(
         dataset,
         batch_size=1,
-        shuffle=True,
+        shuffle=config["training"]["shuffle"],
         num_workers=config["training"]["num_workers"],
     )
     return dataloader
@@ -166,8 +167,8 @@ def get_sample_density(config):
 
 def get_scheduler(config, optimiser, start_epoch):
     end_epoch = config["training"]["end_epoch"]
-    start_lr = config["training"]["start_lr"]
-    end_lr = config["training"]["end_lr"]
+    start_lr = config["training"]["start_lr_multiplier"]
+    end_lr = config["training"]["end_lr_multiplier"]
 
     def lr_func(epoch):
         if epoch <= start_epoch:

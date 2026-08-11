@@ -131,7 +131,7 @@ class EMDCalculator(ReferenceBase):
             )
             del sample
             physical_points = inference.unshift_points(
-                physical_points, point_layer_ids, self.cond, self.config
+                physical_points, point_layer_ids, self.cond[start:end], self.config
             )
             cells = inference.physical_to_cells(
                 physical_points, point_layer_ids, self.config
@@ -145,7 +145,7 @@ class EMDCalculator(ReferenceBase):
 
     @staticmethod
     def get_output_path_from_model_path(model_path):
-        output_path = model_path.split(".")[0] + "_emd.npz"
+        output_path = '.'.join(model_path.split(".")[:-1]) + "_emd.npz"
         return output_path
 
     @classmethod
@@ -574,6 +574,7 @@ class ModelSummary(SingularsMixin):
         save_summary=True,
     ):
         printer(f"Loading model from {model_path}")
+        output_path = None
         if save_summary:
             output_path = cls.get_output_path_from_model_path(model_path)
             printer(f"Saving summary to {output_path}")
@@ -607,7 +608,7 @@ class ModelSummary(SingularsMixin):
             )
             del sample
             physical_points = inference.unshift_points(
-                physical_points, point_layer_ids, self.cond, self.config
+                physical_points, point_layer_ids, self.cond[start:end], self.config
             )
             cells = inference.physical_to_cells(
                 physical_points, point_layer_ids, self.config
@@ -634,7 +635,7 @@ class ModelSummary(SingularsMixin):
 
     @staticmethod
     def get_output_path_from_model_path(model_path):
-        output_path = model_path.split(".")[0] + "_summary.npz"
+        output_path = '.'.join(model_path.split(".")[:-1]) + "_summary.npz"
         return output_path
 
 

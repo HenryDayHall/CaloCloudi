@@ -1,4 +1,5 @@
 import torch
+import numbers
 from torch.nn import Module, ModuleList, functional, Linear
 import k_diffusion
 
@@ -45,9 +46,18 @@ class Diffusion(Module):
         self.config = config
         self.distillation = distillation
         device = config["device"]
-        sigma_data = config["training"]["sigma_data"]
 
         net = PointwiseNet_kDiffusion(config=config)
+
+        # set up the denoiser
+        sigma_data = config["training"]["sigma_data"]
+        n_features = config["model"]["feature_dim"]
+        if isinstance(sigma_data, numbers.Real):
+            sigma_data = [sigma_data] * n_features
+        if len(sigma_data) != n_features:
+            raise ValueError(
+                "sigma_data must be either a float or a list of n_features floats."
+            )
         if not distillation:
             self.diffusion = Denoiser(
                 net,
@@ -211,12 +221,8 @@ class Denoiser(torch.nn.Module):
     ):
         super().__init__()
         self.inner_model = inner_model
-        if isinstance(sigma_data, float):
-            sigma_data = [sigma_data, sigma_data, sigma_data, sigma_data]
-        if len(sigma_data) != 4:
-            raise ValueError("sigma_data must be either a float or a list of 4 floats.")
-        # self.sigma_data = sigma_data   # B,
-        self.sigma_data = torch.tensor(sigma_data, device=device)  # 4,
+        self.sigma_data = torch.tensor(sigma_data)
+        self.register_buffer("sigma_data", self.sigma_data)
         self.distillation = distillation
         self.sigma_min = sigma_min
         self.diffusion_loss = diffusion_loss
@@ -274,6 +280,7 @@ class Denoiser(torch.nn.Module):
         if not (input_mask is None or input_mask.all()):
             # we need to fill some values of the input from the rest of the input
             changes_needed = (~input_mask).sum(1)
+            input = input.clone()
             for i in torch.where(changes_needed > 0)[0]:
                 event = input_mask[i]
                 possible = torch.where(event)[0]
@@ -319,6 +326,7 @@ class Denoiser(torch.nn.Module):
         noise = torch.randn_like(input)
         dims = input.ndim
         num_scales = config["num_steps"]
+        assert num_scales > 1, "if you want one step you need a distilled model"
 
         def denoise_fn(x, t):  # t = sigma
             return self(x, t, **kwargs)
@@ -469,7 +477,7 @@ class PointwiseNet_kDiffusion(Module):
             torch.nn.Linear(time_dim, time_dim),  # this is a trainable layer
         )
 
-    def forward(self, x, sigma, context=None):
+    def forward(self, x, sigma, context):
         """
         Args:
             x:  Point clouds at some timestep t, (B, N, d).
