@@ -1,15 +1,14 @@
 --extra-index-url https://download.pytorch.org/whl/cu126
 torch>=2.1
-torchvision>=0.24
 
 # ---- Scientific stack -----------------------------------------------------
 numpy>=1.26,<3
-scipy>=1.13
+scipy
 setuptools==69.0.3  # some versions of setuptools dont contain pkg_resources
-matplotlib  # needs pkg_resources
-h5py>=3.11
+matplotlib
+h5py>=3.10
 PyYAML
-k-diffusion>=0.1.1
+k-diffusion
 showerdata
 
 # ---- Dev / debug ----------------------------------------------------------
