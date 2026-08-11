@@ -52,65 +52,100 @@ def confine_to_box(configs, X, Y, Z, E, detector_coords=True):
     return X, Y, Z, E
 
 
+def _cell_edges(center, half_cell_size, offset, divisions):
+    """
+    Bin edges spanning one cell, split into ``divisions`` sub-cells.
+
+    Parameters
+    ----------
+    center : float
+        Position of the cell center.
+    half_cell_size : float
+        Half the width of a cell.
+    offset : float
+        Width of one sub-cell, i.e. ``cell_size / divisions``.
+    divisions : int
+        Number of sub-cells to split the cell into.
+
+    Returns
+    -------
+    edges : list of float
+        ``divisions + 1`` edges, from the bottom of the cell to the top.
+    """
+    bottom = center - half_cell_size
+    return [bottom + offset * n for n in range(divisions)] + [center + half_cell_size]
+
+
+def _drop_near_duplicate_edges(edges, tolerance=1e-3):
+    """
+    Remove edges that would create a bin narrower than ``tolerance``.
+
+    Keeps the last edge unconditionally, so the outer extent is preserved.
+    """
+    kept = [
+        edges[i] for i in range(len(edges) - 1)
+        if abs(edges[i] - edges[i + 1]) > tolerance
+    ]
+    return kept + [edges[-1]]
+
+
+def _cell_centers_in_row(unique_positions, half_cell_size):
+    """
+    Reduce measured positions along one axis to one center per cell.
+
+    A position within about a cell of the previous one is the same cell seen
+    again, so only the first of such a run is kept.
+    """
+    centers = [unique_positions[0]]
+    for i in range(len(unique_positions) - 1):
+        if abs(unique_positions[i] - unique_positions[i + 1]) > half_cell_size * 1.9:
+            centers.append(unique_positions[i + 1])
+    return centers
+
+
 def create_map(configs, confine=False):
     X, Y, Z, E = confine_to_box(configs, *load_muon_map(), detector_coords=True)
 
-    layer_bottom_pos = configs["detector"]["layer_bottom_pos"]
+    layer_bottom_pos = np.array(configs["detector"]["layer_bottom_pos"])
     half_cell_size_global = configs["detector"]["cell_size"] / 2
     cell_thickness_global = configs["detector"]["cell_thickness"]
 
     dm = configs["data"]["divisions_per_cell"]
     offset = configs["detector"]["cell_size"] / dm
 
+    # Use the same bands as find_layers, so that a muon hit builds the cell
+    # geometry of the layer that find_layers will later assign points to.
+    # These are clamped, so layers cannot claim each other's hits.
+    layer_floors, layer_ceilings = floors_ceilings(
+        layer_bottom_pos,
+        cell_thickness_global,
+        percent_buffer=0.5,
+    )
+
     layers = []
     for layer_n in range(len(layer_bottom_pos)):  # loop over layers
-        # layers are well seperated, so take a 0.5 buffer either side
+        # half open, to match find_layers
         idx = np.where(
-            (Y <= (layer_bottom_pos[layer_n] + cell_thickness_global * 1.5))
-            & (Y >= layer_bottom_pos[layer_n] - cell_thickness_global / 2)
+            (Y >= layer_floors[layer_n]) & (Y < layer_ceilings[layer_n])
         )
-
-        xedges = np.array([])
-        zedges = np.array([])
 
         unique_X = np.unique(X[idx])
         unique_Z = np.unique(Z[idx])
 
-        xedges = np.append(xedges, unique_X[0] - half_cell_size_global)
-        xedges = np.append(xedges, unique_X[0] + half_cell_size_global)
+        cell_centers_x = _cell_centers_in_row(unique_X, half_cell_size_global)
 
-        for i in range(len(unique_X) - 1):  # loop over X coordinate cell centers
-            if abs(unique_X[i] - unique_X[i + 1]) > half_cell_size_global * 1.9:
-                xedges = np.append(xedges, unique_X[i + 1] - half_cell_size_global)
-                xedges = np.append(xedges, unique_X[i + 1] + half_cell_size_global)
+        # every cell is divided the same way, on both axes
+        xedges = np.unique(np.concatenate([
+            _cell_edges(center, half_cell_size_global, offset, dm)
+            for center in cell_centers_x
+        ]))
+        zedges = np.unique(np.concatenate([
+            _cell_edges(center, half_cell_size_global, offset, dm)
+            for center in unique_Z
+        ]))
 
-                for of_m in range(dm):
-                    xedges = np.append(
-                        xedges, unique_X[i + 1] - half_cell_size_global + offset * of_m
-                    )  # for higher granularity
-
-        for z in unique_Z:  # loop over Z coordinate cell centers
-            zedges = np.append(zedges, z - half_cell_size_global)
-            zedges = np.append(zedges, z + half_cell_size_global)
-
-            for of_m in range(dm):
-                zedges = np.append(
-                    zedges, z - half_cell_size_global + offset * of_m
-                )  # for higher granularity
-
-        zedges = np.unique(zedges)
-        xedges = np.unique(xedges)
-
-        xedges = [
-            xedges[i]
-            for i in range(len(xedges) - 1)
-            if abs(xedges[i] - xedges[i + 1]) > 1e-3
-        ] + [xedges[-1]]
-        zedges = [
-            zedges[i]
-            for i in range(len(zedges) - 1)
-            if abs(zedges[i] - zedges[i + 1]) > 1e-3
-        ] + [zedges[-1]]
+        xedges = _drop_near_duplicate_edges(xedges)
+        zedges = _drop_near_duplicate_edges(zedges)
 
         H, xedges, zedges = np.histogram2d(X[idx], Z[idx], bins=(xedges, zedges))
         layers.append({"xedges": xedges, "zedges": zedges, "grid": H})
