@@ -97,7 +97,8 @@ class Logger:
             np.save(os.path.join(self.log_dir, name), self.values[name])
         for name in self.validation_values:
             np.save(
-                os.path.join(self.log_dir, f"val_{name}"), self.validation_values[name]
+                os.path.join(self.log_dir, f"val_{name}.npy"),
+                self.validation_values[name],
             )
         with open(os.path.join(self.log_dir, "logs.txt"), "w") as f:
             f.write(self.text)

@@ -43,6 +43,6 @@ dependencies:
   # - cuda-toolkit=12.6   # from the nvidia channel; add `- nvidia` to channels
   #
   # ensure we have setuptools 69.0.3 because we need it for pkg_resources
-  - pip install setuptools==69.0.3
-  #  - pip:
-  #      - -r requirements.txt
+  - pip:
+      - setuptools==69.0.3
+      - -r requirements.txt
