@@ -168,6 +168,7 @@ class EMDCalculator(ReferenceBase):
             total_size=total_size,
             printer=printer,
         )
+        output_path = None
         if save_summary:
             output_path = cls.get_output_path_from_model_path(model_path)
             printer(f"Saving summary to {output_path}")

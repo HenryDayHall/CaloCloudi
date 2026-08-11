@@ -135,7 +135,7 @@ def get_dataloader(config):
     dataloader = DataLoader(
         dataset,
         batch_size=1,
-        shuffle=config["training"]["shuffle"],
+        shuffle=config["training"]["shuffle_data"],
         num_workers=config["training"]["num_workers"],
     )
     return dataloader

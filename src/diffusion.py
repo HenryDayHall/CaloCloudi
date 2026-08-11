@@ -213,7 +213,7 @@ class Denoiser(torch.nn.Module):
     def __init__(
         self,
         inner_model,
-        sigma_data=0.5,
+        sigma_data: list[float],
         device="cuda",
         distillation=False,
         sigma_min=0.002,
@@ -221,8 +221,7 @@ class Denoiser(torch.nn.Module):
     ):
         super().__init__()
         self.inner_model = inner_model
-        self.sigma_data = torch.tensor(sigma_data)
-        self.register_buffer("sigma_data", self.sigma_data)
+        self.register_buffer("sigma_data", torch.tensor(sigma_data))
         self.distillation = distillation
         self.sigma_min = sigma_min
         self.diffusion_loss = diffusion_loss
