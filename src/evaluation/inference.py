@@ -161,7 +161,7 @@ def sample_to_physical(points, points_per_layer, config):
     points[:, :, 2][remove_mask] = beyond_detector
 
     layer_centers = get_layer_centers(config, coordinates="detector")
-    points_by_height = np.argsort(points[:, :, 2], axis=1)
+    points_by_height = np.argsort(np.argsort(points[:, :, 2], axis=1), axis=1)
 
     n_events, n_layers = points_per_layer.shape
     cumulative_points_per_layer = np.concatenate(
