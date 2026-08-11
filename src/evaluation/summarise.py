@@ -232,7 +232,7 @@ def pca(cells, energy_fraction=1.0):
         event_mask = mask[event_n]
         # get the top energy_fraction of the cells
         energies = cells[event_n, event_mask, 3]
-        energy_order = np.argsort(energies)
+        energy_order = np.argsort(np.argsort(energies))
         order_cut = int(len(energies) * (1 - energy_fraction))
         energy_fraction_mask = energy_order > order_cut
         weights = energies[energy_fraction_mask]

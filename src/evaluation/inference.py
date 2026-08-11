@@ -52,7 +52,7 @@ class Sampler:
         restored_output = self.preprocess_features.inverse(output)
         restored_output = restored_output.cpu().numpy()
         energies = restored_output[:, :, 3]
-        energy_order = np.argsort(energies, axis=1)
+        energy_order = np.argsort(np.argsort(np.argsort(energies, axis=1)))
         remove_from_event = max_points - num_points
         remove = energy_order < remove_from_event[:, None]
         restored_output[remove] = 0
@@ -134,7 +134,7 @@ def sample_to_physical(points, points_per_layer, config):
 
     total_points_requested = points_per_layer.sum(1)
     point_energy = points[:, :, 3]
-    order_by_energy = np.argsort(point_energy, axis=1)
+    order_by_energy = np.argsort(np.argsort(point_energy, axis=1))
     num_to_remove = points.shape[1] - total_points_requested
     remove_mask = order_by_energy < num_to_remove[:, None]
 
@@ -162,17 +162,19 @@ def sample_to_physical(points, points_per_layer, config):
     detector_low_z = config["data"]["Zmin_in_detector"]
     data_x_range = config["data"]["Xmax"] - data_low_x
     detector_z_range = config["data"]["Zmax_in_detector"] - detector_low_z
-    shift_0 = detector_low_z - data_low_x
     scale_0 = detector_z_range / data_x_range
-    physical_points[~remove_mask, 2] = (points[~remove_mask, 0] + shift_0) * scale_0
+    physical_points[~remove_mask, 2] = (
+        points[~remove_mask, 0] - data_low_x
+    ) * scale_0 + detector_low_z
 
     data_low_y = config["data"]["Ymin"]
     detector_low_x = config["data"]["Xmin_in_detector"]
     data_y_range = config["data"]["Ymax"] - data_low_y
     detector_x_range = config["data"]["Xmax_in_detector"] - detector_low_x
-    shift_1 = detector_low_x - data_low_y
     scale_1 = detector_x_range / data_y_range
-    physical_points[~remove_mask, 0] = (points[~remove_mask, 1] + shift_1) * scale_1
+    physical_points[~remove_mask, 0] = (
+        points[~remove_mask, 1] - data_low_y
+    ) * scale_1 + detector_low_x
 
     physical_points[remove_mask] = 0
 
@@ -182,7 +184,7 @@ def sample_to_physical(points, points_per_layer, config):
 def unshift_points(physical_points, point_layer_ids, cond_data_coords, config):
     # cond -> (e, x, y, z) in data
     # cond -> (e, z, x, y) in physical
-    direction_vectors = cond_data_coords[:, 1:]
+    direction_vectors = cond_data_coords[:, 1:4]
     normalised_direction_vectors = direction_vectors / np.linalg.norm(
         direction_vectors, axis=1, keepdims=True
     )
