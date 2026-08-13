@@ -24,11 +24,13 @@ def confine_to_box(config, X, Y, Z, E, detector_coords=True):
     if detector_coords:
         Xmin = config["data"]["Xmin_in_detector"]
         Xmax = config["data"]["Xmax_in_detector"]
+        layer_bottom_pos = config["detector"]["layer_bottom_pos"]
+        if len(layer_bottom_pos) > config["detector"]["hcal_start"]:
+            cell_thickness = config["detector"]["cell_thickness_hcal"]
+        else:
+            cell_thickness = config["detector"]["cell_thickness_ecal"]
         Ymin = config["detector"]["layer_bottom_pos"][0]
-        Ymax = (
-            config["detector"]["layer_bottom_pos"][-1]
-            + config["detector"]["cell_thickness_hcal"]
-        )
+        Ymax = config["detector"]["layer_bottom_pos"][-1] + cell_thickness
         Zmin = config["data"]["Zmin_in_detector"]
         Zmax = config["data"]["Zmax_in_detector"]
     else:
@@ -37,9 +39,7 @@ def confine_to_box(config, X, Y, Z, E, detector_coords=True):
         Ymin = config["data"]["Ymin"]
         Ymax = config["data"]["Ymax"]
         Zmin = config["data"]["layer_bottom_pos"][0]
-        Zmax = (
-            config["data"]["layer_bottom_pos"][-1] + config["data"]["cell_thickness"]
-        )
+        Zmax = config["data"]["layer_bottom_pos"][-1] + config["data"]["cell_thickness"]
 
     inbox_idx = np.where(
         (X > Xmin) & (X < Xmax) & (Y > Ymin) & (Y < Ymax) & (Z > Zmin) & (Z < Zmax)
@@ -83,7 +83,8 @@ def _drop_near_duplicate_edges(edges, tolerance=1e-3):
     Keeps the last edge unconditionally, so the outer extent is preserved.
     """
     kept = [
-        edges[i] for i in range(len(edges) - 1)
+        edges[i]
+        for i in range(len(edges) - 1)
         if abs(edges[i] - edges[i + 1]) > tolerance
     ]
     return kept + [edges[-1]]
@@ -109,7 +110,7 @@ def detector_cell_thickness(config):
     cell_thickness_hcal = config["detector"]["cell_thickness_hcal"]
     hcal_start = config["detector"]["hcal_start"]
 
-    cell_thickness = np.full(len(layer_bottom_pos), cell_thickness_ecal)
+    cell_thickness = np.full(len(layer_bottom_pos), cell_thickness_ecal, dtype=float)
     cell_thickness[hcal_start:] = cell_thickness_hcal
 
     return cell_thickness
@@ -138,9 +139,7 @@ def create_map(config, confine=False):
     layers = []
     for layer_n in range(len(layer_bottom_pos)):  # loop over layers
         # half open, to match find_layers
-        idx = np.where(
-            (Y >= layer_floors[layer_n]) & (Y < layer_ceilings[layer_n])
-        )
+        idx = np.where((Y >= layer_floors[layer_n]) & (Y < layer_ceilings[layer_n]))
 
         unique_X = np.unique(X[idx])
         unique_Z = np.unique(Z[idx])
@@ -148,14 +147,22 @@ def create_map(config, confine=False):
         cell_centers_x = _cell_centers_in_row(unique_X, half_cell_size_global)
 
         # every cell is divided the same way, on both axes
-        xedges = np.unique(np.concatenate([
-            _cell_edges(center, half_cell_size_global, offset, dm)
-            for center in cell_centers_x
-        ]))
-        zedges = np.unique(np.concatenate([
-            _cell_edges(center, half_cell_size_global, offset, dm)
-            for center in unique_Z
-        ]))
+        xedges = np.unique(
+            np.concatenate(
+                [
+                    _cell_edges(center, half_cell_size_global, offset, dm)
+                    for center in cell_centers_x
+                ]
+            )
+        )
+        zedges = np.unique(
+            np.concatenate(
+                [
+                    _cell_edges(center, half_cell_size_global, offset, dm)
+                    for center in unique_Z
+                ]
+            )
+        )
 
         xedges = _drop_near_duplicate_edges(xedges)
         zedges = _drop_near_duplicate_edges(zedges)
