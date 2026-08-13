@@ -1,10 +1,4 @@
-"""Shared fixtures for the CaloCloudi test suite.
-
-Scope: only the ``padded`` and ``padded_unordered`` data formats.  The
-``showerdata`` package is stubbed so the tests do not need it installed --
-``read_write`` and ``dataset`` import it at module level but only *call* it on
-the showerdata code paths, which we never exercise.
-"""
+"""Shared fixtures for the CaloCloudi test suite."""
 
 import sys
 from pathlib import Path
@@ -17,7 +11,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-try:  # pragma: no cover - depends on the developer's environment
+
+try:  # pragma: no cover
     import showerdata  # noqa: F401
 except ImportError:  # pragma: no cover
     sys.modules["showerdata"] = MagicMock()
@@ -27,9 +22,6 @@ import h5py  # noqa: E402
 N_FEATURES = 4  # x, y, z, e
 
 
-# --------------------------------------------------------------------------- #
-# Builders for on-disk "padded" h5 files
-# --------------------------------------------------------------------------- #
 def make_padded_file(
     path,
     *,
@@ -42,20 +34,8 @@ def make_padded_file(
     points_key="events",
     seed=0,
 ):
-    """Write one h5 file in the "padded" layout and return the truth arrays.
-
-    Keys written are the ones named in ``config/default.yaml``: ``events``,
-    ``energy``, ``n_points`` and ``p_norm_local``.
-
-    Note ``n_events`` deliberately defaults to something that collides with
-    neither ``n_points`` (5), ``N_FEATURES`` (4), nor the width of
-    ``p_norm_local`` (3): several code paths locate the event axis by
-    *searching the shape for a matching length*, so equal lengths would make
-    the tests ambiguous rather than wrong.
-    """
     rng = np.random.default_rng(seed)
 
-    # events, in the regular (n_events, n_points, 4) local layout
     events = rng.normal(size=(n_events, n_points, N_FEATURES))
     n_real = rng.integers(1, n_points + 1, size=n_events)
     energies = np.zeros((n_events, n_points))
@@ -91,7 +71,6 @@ def make_padded_file(
 
 
 def make_empty_padded_file(path, points_key="events"):
-    """A file whose events dataset has zero size -- ``get_n_events`` skips it."""
     with h5py.File(path, "w") as handle:
         handle.create_dataset(points_key, data=np.zeros((0, 0, 0)))
         handle.create_dataset("energy", data=np.zeros(0))
@@ -99,7 +78,6 @@ def make_empty_padded_file(path, points_key="events"):
 
 
 def base_config(dataset_path, *, fmt="padded", roll_axis=False, padding="back"):
-    """A minimal config with the same *shape* as ``config/default.yaml``."""
     return {
         "device": "cpu",
         "preprocessing": {
@@ -153,7 +131,11 @@ def base_config(dataset_path, *, fmt="padded", roll_axis=False, padding="back"):
         },
         "detector": {
             "orientation": "hdf5:xyz==global:zxy",
-            "cell_thickness": 0.5,
+            # layers 0 and 1 are ecal, layer 2 is hcal, so the two thicknesses
+            # and hcal_start are all exercised by a three layer stack
+            "cell_thickness_ecal": 0.5,
+            "cell_thickness_hcal": 2.0,
+            "hcal_start": 2,
             "cell_size": 5.0,
             "layer_bottom_pos": [1811.0, 1814.0, 1823.0],
         },
@@ -166,16 +148,8 @@ def base_config(dataset_path, *, fmt="padded", roll_axis=False, padding="back"):
     }
 
 
-# --------------------------------------------------------------------------- #
-# Fixtures
-# --------------------------------------------------------------------------- #
 @pytest.fixture(autouse=True)
 def clear_read_write_caches():
-    """``get_possible_files``/``get_files``/``get_n_events`` are ``lru_cache``d.
-
-    Without this, one test's answer leaks into the next.  Autouse so nobody has
-    to remember it.
-    """
     from src.data import read_write
 
     cached = (
@@ -192,12 +166,6 @@ def clear_read_write_caches():
 
 @pytest.fixture
 def padded_dataset(tmp_path):
-    """Factory: writes N padded files and returns ``(config, truth)``.
-
-    ``truth`` holds the concatenated arrays in file order, i.e. exactly what a
-    correct reader should hand back for ``pick_events=range(total)``.
-    """
-
     def _build(n_events=(6, 6, 6), n_points=5, roll_axis=False, fmt="padded", **kwargs):
         pattern = str(tmp_path / "data_{}.h5")
         per_file = []
