@@ -16,29 +16,29 @@ def load_muon_map(assets_dir=None):
     return muon_map_X, muon_map_Y, muon_map_Z, muon_map_E
 
 
-def confine_to_box(configs, X, Y, Z, E, detector_coords=True):
+def confine_to_box(config, X, Y, Z, E, detector_coords=True):
     """
     Remove hits that fall outside the box specified by the metadata.
 
     """
     if detector_coords:
-        Xmin = configs["data"]["Xmin_in_detector"]
-        Xmax = configs["data"]["Xmax_in_detector"]
-        Ymin = configs["detector"]["layer_bottom_pos"][0]
+        Xmin = config["data"]["Xmin_in_detector"]
+        Xmax = config["data"]["Xmax_in_detector"]
+        Ymin = config["detector"]["layer_bottom_pos"][0]
         Ymax = (
-            configs["detector"]["layer_bottom_pos"][-1]
-            + configs["detector"]["cell_thickness"]
+            config["detector"]["layer_bottom_pos"][-1]
+            + config["detector"]["cell_thickness_hcal"]
         )
-        Zmin = configs["data"]["Zmin_in_detector"]
-        Zmax = configs["data"]["Zmax_in_detector"]
+        Zmin = config["data"]["Zmin_in_detector"]
+        Zmax = config["data"]["Zmax_in_detector"]
     else:
-        Xmin = configs["data"]["Xmin"]
-        Xmax = configs["data"]["Xmax"]
-        Ymin = configs["data"]["Ymin"]
-        Ymax = configs["data"]["Ymax"]
-        Zmin = configs["data"]["layer_bottom_pos"][0]
+        Xmin = config["data"]["Xmin"]
+        Xmax = config["data"]["Xmax"]
+        Ymin = config["data"]["Ymin"]
+        Ymax = config["data"]["Ymax"]
+        Zmin = config["data"]["layer_bottom_pos"][0]
         Zmax = (
-            configs["data"]["layer_bottom_pos"][-1] + configs["data"]["cell_thickness"]
+            config["data"]["layer_bottom_pos"][-1] + config["data"]["cell_thickness"]
         )
 
     inbox_idx = np.where(
@@ -103,22 +103,35 @@ def _cell_centers_in_row(unique_positions, half_cell_size):
     return centers
 
 
-def create_map(configs, confine=False):
-    X, Y, Z, E = confine_to_box(configs, *load_muon_map(), detector_coords=True)
+def detector_cell_thickness(config):
+    layer_bottom_pos = config["detector"]["layer_bottom_pos"]
+    cell_thickness_ecal = config["detector"]["cell_thickness_ecal"]
+    cell_thickness_hcal = config["detector"]["cell_thickness_hcal"]
+    hcal_start = config["detector"]["hcal_start"]
 
-    layer_bottom_pos = np.array(configs["detector"]["layer_bottom_pos"])
-    half_cell_size_global = configs["detector"]["cell_size"] / 2
-    cell_thickness_global = configs["detector"]["cell_thickness"]
+    cell_thickness = np.full(len(layer_bottom_pos), cell_thickness_ecal)
+    cell_thickness[hcal_start:] = cell_thickness_hcal
 
-    dm = configs["data"]["divisions_per_cell"]
-    offset = configs["detector"]["cell_size"] / dm
+    return cell_thickness
+
+
+def create_map(config, confine=False):
+    X, Y, Z, E = confine_to_box(config, *load_muon_map(), detector_coords=True)
+
+    layer_bottom_pos = np.array(config["detector"]["layer_bottom_pos"])
+    half_cell_size_global = config["detector"]["cell_size"] / 2
+
+    cell_thickness = detector_cell_thickness(config)
+
+    dm = config["data"]["divisions_per_cell"]
+    offset = config["detector"]["cell_size"] / dm
 
     # Use the same bands as find_layers, so that a muon hit builds the cell
     # geometry of the layer that find_layers will later assign points to.
     # These are clamped, so layers cannot claim each other's hits.
     layer_floors, layer_ceilings = floors_ceilings(
         layer_bottom_pos,
-        cell_thickness_global,
+        cell_thickness,
         percent_buffer=0.5,
     )
 
@@ -175,7 +188,7 @@ def floors_ceilings(layer_bottom_pos, cell_thickness, percent_buffer=0.5):
     ----------
     layer_bottom_pos : np.array
         Array of the bottom positions of the layers.
-    cell_thickness : float
+    cell_thickness : float or np.array
         Thickness of the cells in the detector, in the radial direction
     percent_buffer : float
         Percentage beyond the thickness of the cell to include hits
@@ -213,8 +226,9 @@ def find_layers(config, points, coordinates="data"):
         cell_thickness = config["data"]["cell_thickness"]
         height = points[:, :, 2]
     elif coordinates == "detector":
-        layer_bottom_pos = config["detector"]["layer_bottom_pos"]
-        cell_thickness = config["detector"]["cell_thickness"]
+        layer_bottom_pos = np.array(config["detector"]["layer_bottom_pos"])
+        cell_thickness = detector_cell_thickness(config)
+
         height = points[:, :, 1]
 
     layer_bottom_pos = np.array(layer_bottom_pos)
