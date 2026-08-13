@@ -172,7 +172,7 @@ def get_layer_centers(config, coordinates="data"):
         cell_thickness = config["data"]["cell_thickness"]
     elif coordinates == "detector":
         layer_bottom_pos = config["detector"]["layer_bottom_pos"]
-        cell_thickness = config["detector"]["cell_thickness"]
+        cell_thickness = detector_cell_thickness(config)
 
     layer_bottom_pos = np.array(layer_bottom_pos)
     layer_centers = layer_bottom_pos + cell_thickness / 2

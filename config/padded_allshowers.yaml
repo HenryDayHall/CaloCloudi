@@ -89,7 +89,6 @@ data:
 detector:
   Ymin: 1811
   orientation: "hdf5:xyz==global:zxy"
-  cell_thickness: 0.5250244140625
   cell_thickness_ecal: 0.5250244140625
   cell_thickness_hcal: 3.0
   cell_size:  5.0883331298828125
