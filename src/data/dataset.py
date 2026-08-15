@@ -60,6 +60,13 @@ class AbstractBase(Dataset):
             )
             done[mask] = True
 
+    def pdgs_to_onehot(self, pdgs):
+        pdgs = np.asarray(pdgs)
+        # (n_pdgs, n_classes) boolean match table
+        matches = pdgs[:, np.newaxis] == self.pdg_onehot_order[np.newaxis, :]
+        onehot = matches.astype(int)
+        return onehot
+
     def __len__(self):
         return self._len
 
@@ -83,6 +90,7 @@ class PointCloudDataset(AbstractBase):
             config...
         """
         self.config = config
+        self.pdg_onehot_order = np.array(self.config["simulate_pdgs"])
         file_path = self.config["data"]["dataset_path"]
         self.keys_to_include = {
             name: self.config["data"].get(f"{name}_key", name)
@@ -156,8 +164,9 @@ class PointCloudDataset(AbstractBase):
         index_list = []
         event_key = self.config["data"]["points_key"]
         for file_idx, dataset in enumerate(self.open_files):
-            if "n_points" in dataset:
-                n_points = dataset["n_points"][:]
+            n_points_key = self.config["data"]["n_points_key"]
+            if n_points_key is not None and n_points_key in dataset:
+                n_points = dataset[n_points_key][:]
             else:
                 if self.config["data"]["roll_axis"]:
                     events = np.moveaxis(dataset[event_key], -1, -2)
@@ -165,7 +174,15 @@ class PointCloudDataset(AbstractBase):
                 else:
                     n_points = self.get_n_points(dataset[event_key])
             n_points[n_points > self.max_ds_seq_len] = self.max_ds_seq_len
-            index_list += [(n, file_idx, i) for i, n in enumerate(n_points)]
+            pdg_key = self.config["data"]["incident_pdg_key"]
+            if pdg_key is not None and pdg_key in dataset:
+                pdgs = dataset[pdg_key][:]
+                use_events = np.isin(pdgs, self.pdg_onehot_order)
+            else:
+                use_events = np.ones(len(n_points), dtype=bool)
+            index_list += [
+                (n, file_idx, i) for i, n in enumerate(n_points) if use_events[i]
+            ]
         # sort the index list by 'n_points'
         index_list.sort(key=lambda x: x[0])
         index_list = np.array(index_list, dtype=int)
@@ -196,9 +213,7 @@ class PointCloudDataset(AbstractBase):
         elif padding == "back":
             is_front_padded = False
         else:
-            raise ValueError(
-                f"padding must be 'front' or 'back', not {padding}"
-            )
+            raise ValueError(f"padding must be 'front' or 'back', not {padding}")
         return is_front_padded
 
     def _event_processing(self, event):
@@ -237,6 +252,9 @@ class PointCloudDataset(AbstractBase):
             if name_in_batch == "points":
                 data = self._event_processing(data)
 
+            if name_in_batch == "incident_pdg":
+                data = self.pdgs_to_onehot(data)
+
             if len(data.shape) == 1:
                 data = data[..., np.newaxis]
             batch[name_in_batch] = data
@@ -272,6 +290,7 @@ class ShowerDataDataset(AbstractBase):
             config...
         """
         self.config = config
+        self.pdg_onehot_order = np.array(self.config["simulate_pdgs"])
         file_path = self.config["data"]["dataset_path"]
         self.keys_to_include = {
             name: self.config["data"].get(f"{name}_key", name)
@@ -344,7 +363,11 @@ class ShowerDataDataset(AbstractBase):
         for file_idx, dataset in enumerate(self.open_files):
             n_points = self.get_n_points(dataset[:].points)
             n_points[n_points > self.max_ds_seq_len] = self.max_ds_seq_len
-            index_list += [(n, file_idx, i) for i, n in enumerate(n_points)]
+            pdgs = dataset[:].pdg
+            use_events = np.isin(pdgs, self.pdg_onehot_order)
+            index_list += [
+                (int(n), file_idx, i) for i, n in enumerate(n_points) if use_events[i]
+            ]
         # sort the index list by 'n_points'
         index_list.sort(key=lambda x: x[0])
         index_list = np.array(index_list, dtype=int)
@@ -365,18 +388,23 @@ class ShowerDataDataset(AbstractBase):
 
     def __getitem__(self, idx):
         idxs = self.choose_idxs(idx)
-        batch = {}
+        batch = {name_in_batch: [] for name_in_batch in self.keys_to_include}
+        for n_pts, file_n, event_n in self.index_list[idxs]:
+            event = self.open_files[int(file_n)][int(event_n)]
+            for name_in_batch, name_on_disk in self.keys_to_include.items():
+                batch[name_in_batch].append(getattr(event, name_on_disk))
         for name_in_batch, name_on_disk in self.keys_to_include.items():
-            data = np.array(
-                [
-                    getattr(self.open_files[file_n][event_n], name_on_disk)
-                    for n_pts, file_n, event_n in self.index_list[idxs]
-                ]
-            )
+            data = batch[name_in_batch]
+            data = np.array(data)
 
             if name_in_batch == "points":
                 data = self._event_processing(data)
 
+            if name_in_batch == "incident_pdg":
+                data = self.pdgs_to_onehot(data)
+
+            if len(data.shape) > 2:
+                data = data.squeeze()
             if len(data.shape) == 1:
                 data = data[..., np.newaxis]
             batch[name_in_batch] = data

@@ -1,7 +1,8 @@
-device: "cuda"
+device: "cpu"
 sampler: "heun"
 num_steps: 20
 output_path: "/data/dust/user/dayhallh/data/CaloClouds_diffusion"
+simulate_pdgs: [-11, 11, 22]
 
 preprocessing:
   conditioning:
@@ -27,8 +28,8 @@ preprocessing:
 
 model:
   logarithmic_point_energy: true
-  cond_dim: 4
-  cond_features: ["incident_energy", "incident_direction"]
+  cond_dim: 7  # 4 + 3
+  cond_features: ["incident_energy", "incident_direction", "incident_pdg"]
   feature_dim: 4
   rho: 7.0
   s_churn: 0.0
@@ -38,6 +39,7 @@ model:
 
 data:
   dataset_path: "/data/dust/user/dayhallh/data/AllShowers/sliced_geant4/geant4_{}_of_200.h5"
+  contains_pdgs: [-2212, -2112, -321, -211, -11, 11, 22, 130, 211, 321, 2112, 2212]
   test_range_start: 0
   test_range_end: 20
   val_range_start: 20

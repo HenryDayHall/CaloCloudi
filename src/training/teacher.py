@@ -4,7 +4,7 @@ import k_diffusion
 from . import utils
 from ..diffusion import Diffusion
 from ..data.transforms import preprocessing
-from ..data import read_write
+from ..data.dataset import from_config as dataset_from_config
 from ..evaluation.inference import evaluating
 
 
@@ -24,14 +24,15 @@ class ValidationChecker:
         self.dtype = getattr(torch, config["training"]["dtype"])
         self.sample_density = sample_density
         self.n_batches = validation_size // self.batch_size
-        cond_feature_names = config["model"]["cond_features"]
-        names_in_data = [config["data"][f"{name}_key"] for name in cond_feature_names]
-        cond, target = read_write.read_raw_regaxes(
-            config, part="val", total_size=validation_size, per_event_cols=names_in_data
-        )
-        self.cond = preprocess_conditioning.forward(
-            torch.from_numpy(cond).to(self.device, dtype=self.dtype)
-        )
+        dataset = dataset_from_config(config, dataset_part="val")
+        dataset.bs = min(len(dataset), validation_size)
+        all_val = dataset[0]
+        target = all_val["points"]
+        cond = [
+            torch.from_numpy(all_val[name]).to(self.device, dtype=self.dtype)
+            for name in config["model"]["cond_features"]
+        ]
+        self.cond = preprocess_conditioning.forward(torch.cat(cond, dim=1))
         self.target = preprocess_features.forward(
             torch.from_numpy(target).to(self.device, dtype=self.dtype)
         )

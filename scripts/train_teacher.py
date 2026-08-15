@@ -64,6 +64,7 @@ checkpoint_time_interval_seconds = (
     config["training"]["checkpoint_time_interval_min"] * 60
 )
 checkpoint_batch_interval = config["training"]["checkpoint_batch_interval"]
+cond_keys = config["model"]["cond_features"]
 
 for epoch in range(start_epoch + 1, end_epoch + 1):
     logger.add_text(f"Training epoch {epoch}/{end_epoch}")
@@ -74,7 +75,7 @@ for epoch in range(start_epoch + 1, end_epoch + 1):
         n_events += batch_size
         n_updates += 1
         batch_cond = torch.cat(
-            [batch["incident_energy"], batch["incident_direction"]],
+            [batch[key] for key in cond_keys],
             dim=-1,
         )
         batch_cond = batch_cond.to(device, dtype=dtype)

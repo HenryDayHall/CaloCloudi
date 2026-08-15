@@ -2,6 +2,7 @@ device: "cuda"
 sampler: "heun"
 num_steps: 20
 output_path: "/data/dust/user/dayhallh/data/CaloClouds_diffusion"
+simulate_pdgs: [22]
 
 preprocessing:
   conditioning:
@@ -38,6 +39,7 @@ model:
 
 data:
   dataset_path: "/data/dust/group/ilc/sft-ml/datasets/sim-E1261AT600AP180-180/sim-E1261AT600AP180-180_file_{}.slcio.hdf5"
+  contains_pdgs: [22]
   test_range_start: 0
   test_range_end: 10
   val_range_start: 10

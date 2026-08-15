@@ -2,6 +2,7 @@ device: "cuda"
 sampler: "heun"
 num_steps: 20
 output_path: "/data/dust/user/dayhallh/data/CaloClouds_diffusion"
+simulate_pdgs: [22]
 
 preprocessing:
   conditioning:
@@ -38,6 +39,7 @@ model:
 
 data:
   dataset_path: "/data/dust/user/dayhallh/data/AllShowers/padded_photons/Padded_photon_full_{}.h5"
+  contains_pdgs: [22]
   test_range_start: 0
   test_range_end: 6
   val_range_start: 6
