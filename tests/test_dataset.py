@@ -1,12 +1,16 @@
-"""Tests for ``src/data/dataset.py`` -- padded / padded_unordered only.
-
-``ShowerDataDataset`` is out of scope, so it only appears in the ``from_config``
-dispatch tests, where it is mocked.
+"""Tests for ``src/data/dataset.py`` -- padded, padded_unordered and showerdata.
 
 The pure helpers on ``AbstractBase`` are exercised against a lightweight stub
 that carries just the attributes they read; everything below that is built from
-real HDF5 files written by ``conftest.make_padded_file``, because most of this
-module is about the shapes h5py hands back and those are not worth faking.
+real files, because most of this module is about the shapes the storage layer
+hands back and those are not worth faking.  The padded formats read HDF5 files
+written by ``conftest.make_padded_file``; ``ShowerDataDataset`` reads real
+ShowerData files written by ``conftest.make_showerdata_file``, so its tests
+skip when the ``showerdata`` package is only stubbed.
+
+Every format now filters events by pdg against ``config["simulate_pdgs"]`` and
+one-hot encodes ``incident_pdg`` in the batch, so several pdgs can share a
+dataset; those paths are covered here alongside the older single-pdg ones.
 
 Tests carrying a docstring record current behaviour that looks unintended.
 """
@@ -21,10 +25,19 @@ import torch  # noqa: E402
 
 from src.data import dataset  # noqa: E402
 
-from conftest import base_config, make_padded_file  # noqa: E402
+from conftest import (  # noqa: E402
+    HAS_SHOWERDATA,
+    base_config,
+    make_padded_file,
+    make_showerdata_file,
+)
 
 
 CLASSES = ["PointCloudDataset", "PointCloudDatasetUnordered", "ShowerDataDataset"]
+
+needs_showerdata = pytest.mark.skipif(
+    not HAS_SHOWERDATA, reason="the real showerdata package is not installed"
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -50,11 +63,14 @@ def gather(per_file, rows, key):
 class Stub(dataset.AbstractBase):
     """Just enough state for the methods ``AbstractBase`` defines on its own."""
 
-    def __init__(self, bs=4, length=100, config=None, offset=1.0):
+    def __init__(
+        self, bs=4, length=100, config=None, offset=1.0, pdg_onehot_order=(22,)
+    ):
         self.bs = bs
         self._len = length
         self.config = config
         self.offset = offset
+        self.pdg_onehot_order = np.array(pdg_onehot_order)
 
 
 def as_indices(idxs, length):
@@ -97,6 +113,37 @@ def padded(tmp_path):
             for i, n in enumerate(n_events)
         ]
         config = base_config(pattern, fmt=fmt, roll_axis=roll_axis, padding=padding)
+        config["data"]["train_range_start"] = 0
+        config["data"]["train_range_end"] = len(n_events)
+        return config, per_file, pattern
+
+    return _build
+
+
+@pytest.fixture
+def showers(tmp_path):
+    """Factory: writes N ShowerData files, returns ``(config, per_file, pattern)``.
+
+    The config mirrors ``config/showerdata.yaml``: the on-disk keys are
+    ``points``/``energies``/``directions``/``pdg``, ``incident_pdg`` is a
+    condition, and ``simulate_pdgs`` is ``[-11, 11, 22]``.  The default pdgs
+    cycle through that simulation set, so every event is kept unless a test
+    writes its own mix.
+    """
+
+    def _build(n_events=(6,), *, n_points=5, **kwargs):
+        pattern = str(tmp_path / "shower_{}.h5")
+        per_file = [
+            make_showerdata_file(
+                pattern.format(i),
+                n_events=n,
+                n_points=n_points,
+                seed=i,
+                **kwargs,
+            )
+            for i, n in enumerate(n_events)
+        ]
+        config = base_config(pattern, fmt="showerdata")
         config["data"]["train_range_start"] = 0
         config["data"]["train_range_end"] = len(n_events)
         return config, per_file, pattern
@@ -245,26 +292,60 @@ class TestChooseIdxs:
 
 
 # --------------------------------------------------------------------------- #
-# AbstractBase.__len__
+# AbstractBase.pdgs_to_onehot
 # --------------------------------------------------------------------------- #
-class TestLen:
-    def test_reports_the_cached_length(self):
-        assert len(Stub(length=17)) == 17
+class TestPdgsToOnehot:
+    def test_one_column_per_simulated_pdg_in_config_order(self):
+        stub = Stub(pdg_onehot_order=(-11, 11, 22))
 
-    def test_counts_every_event_across_every_file(self, padded, build):
-        config, per_file, _ = padded(n_events=(4, 6, 5))
+        onehot = stub.pdgs_to_onehot(np.array([22, -11, 11]))
 
-        built = build(config)
+        np.testing.assert_array_equal(onehot, [[0, 0, 1], [1, 0, 0], [0, 1, 0]])
 
-        assert len(built) == 15
-        assert len(built) == len(built.index_list)
+    def test_a_single_class_gives_a_single_column(self):
+        stub = Stub(pdg_onehot_order=(22,))
 
-    def test_only_the_requested_part_is_counted(self, padded, build):
-        config, _, _ = padded(n_events=(4, 6, 5))
+        onehot = stub.pdgs_to_onehot(np.array([22, 22]))
 
-        # val_range is 1..2, i.e. the middle file only
-        assert len(build(config, part="val")) == 6
-        assert len(build(config, part="test")) == 4
+        assert onehot.shape == (2, 1)
+        np.testing.assert_array_equal(onehot, [[1], [1]])
+
+    def test_the_encoding_is_integer(self):
+        stub = Stub(pdg_onehot_order=(-11, 11, 22))
+
+        assert stub.pdgs_to_onehot(np.array([11])).dtype == int
+
+    def test_a_plain_list_is_accepted(self):
+        stub = Stub(pdg_onehot_order=(-11, 11, 22))
+
+        np.testing.assert_array_equal(stub.pdgs_to_onehot([11]), [[0, 1, 0]])
+
+    def test_an_unlisted_pdg_encodes_as_all_zeros(self):
+        """No column matches, so the row is all zeros rather than an error.
+
+        ``_make_index_list`` filters such events out before ``__getitem__``
+        runs, so batches never contain one -- but the encoder itself would let
+        a zero row through silently.
+        """
+        stub = Stub(pdg_onehot_order=(-11, 11, 22))
+
+        onehot = stub.pdgs_to_onehot(np.array([211]))
+
+        np.testing.assert_array_equal(onehot, [[0, 0, 0]])
+
+    def test_a_column_vector_comes_back_three_dimensional(self):
+        """``pdgs[:, np.newaxis]`` on ``(n, 1)`` input broadcasts to
+        ``(n, 1, n_classes)``.
+
+        ``ShowerDataDataset.__getitem__`` feeds it exactly this shape and
+        relies on its own ``squeeze()`` to flatten the result back down.
+        """
+        stub = Stub(pdg_onehot_order=(-11, 11, 22))
+
+        onehot = stub.pdgs_to_onehot(np.array([[22], [11]]))
+
+        assert onehot.shape == (2, 1, 3)
+        np.testing.assert_array_equal(onehot.squeeze(), [[0, 0, 1], [0, 1, 0]])
 
 
 # --------------------------------------------------------------------------- #
@@ -450,6 +531,12 @@ class TestConstruction:
 
         assert build(config).keys_to_include["energy"] == "energy"
 
+    def test_the_onehot_order_comes_from_simulate_pdgs(self, padded, build):
+        config, _, _ = padded()
+        config["simulate_pdgs"] = [-11, 11, 22]
+
+        np.testing.assert_array_equal(build(config).pdg_onehot_order, [-11, 11, 22])
+
     def test_energy_scale_is_available_without_instantiating(self):
         assert dataset.PointCloudDataset.energy_scale == 1000
 
@@ -574,14 +661,7 @@ class TestMakeIndexList:
 
         np.testing.assert_array_equal(np.sort(counts), np.sort(per_file[0]["n_points"]))
 
-    def test_the_n_points_key_setting_is_ignored(self, padded, build):
-        """The lookup is the literal string ``"n_points"``.
-
-        ``config["data"]["n_points_key"]`` is never consulted, so a dataset that
-        stores its counts under any other name silently falls back to counting
-        energies -- correct here, but slow, and wrong if the stored counts
-        differ from the energy column.
-        """
+    def test_a_custom_n_points_key_is_honoured(self, padded, build):
         config, per_file, pattern = padded(n_events=(6,))
         stored = per_file[0]["n_points"]
         drop_key(pattern.format(0), "n_points")
@@ -591,7 +671,18 @@ class TestMakeIndexList:
 
         counts = build(config).index_list[:, 0]
 
-        np.testing.assert_array_equal(np.sort(counts), np.sort(stored))
+        assert set(counts.tolist()) == {0}
+
+    def test_a_null_n_points_key_recounts_the_energies(self, padded, build):
+        """``null`` means recount, even when a column called ``n_points``
+        holding different numbers exists on disk."""
+        config, per_file, pattern = padded(n_events=(6,))
+        replace_key(pattern.format(0), "n_points", np.zeros(6, dtype=int))
+        config["data"]["n_points_key"] = None
+
+        counts = build(config).index_list[:, 0]
+
+        np.testing.assert_array_equal(np.sort(counts), np.sort(per_file[0]["n_points"]))
 
     def test_counts_are_capped_at_max_points_per_event(self, padded, build):
         config, _, _ = padded(n_events=(6,), n_points=5)
@@ -610,6 +701,69 @@ class TestMakeIndexList:
         config, per_file, _ = padded(n_events=(6,), n_points_ndim=2)
 
         assert len(build(config)) == len(per_file[0]["energy"])
+
+
+# --------------------------------------------------------------------------- #
+# PointCloudDataset._make_index_list -- pdg filtering
+# --------------------------------------------------------------------------- #
+class TestMakeIndexListPdgFilter:
+    """Multiple pdgs can share a file; only those in ``simulate_pdgs`` are
+    indexed, so mixed files can train single- or multi-particle models by
+    config alone.
+    """
+
+    MIXED = [22, 211, -11, 22, 11, 130]  # events 1 and 5 are not simulated
+
+    def test_events_with_unlisted_pdgs_are_dropped(self, padded, build):
+        config, _, _ = padded(n_events=(6,), pdgs=self.MIXED)
+        config["data"]["incident_pdg_key"] = "pdg"
+        config["simulate_pdgs"] = [-11, 11, 22]
+
+        built = build(config)
+
+        assert len(built) == 4
+        kept = {int(e) for _, _, e in built.index_list}
+        assert kept == {0, 2, 3, 4}
+
+    def test_kept_events_still_carry_their_own_counts(self, padded, build):
+        config, per_file, _ = padded(n_events=(6,), pdgs=self.MIXED)
+        config["data"]["incident_pdg_key"] = "pdg"
+        config["simulate_pdgs"] = [-11, 11, 22]
+
+        for n_pts, file_n, event_n in build(config).index_list:
+            assert n_pts == per_file[file_n]["n_points"][event_n]
+
+    def test_filtering_is_per_event_not_per_file(self, padded, build):
+        config, _, pattern = padded(n_events=(3, 3), pdgs=[22, 22, 22])
+        replace_key(pattern.format(1), "pdg", np.array([211, 22, 211]))
+        config["data"]["incident_pdg_key"] = "pdg"
+
+        index_list = build(config).index_list
+
+        pairs = {(int(f), int(e)) for _, f, e in index_list}
+        assert pairs == {(0, 0), (0, 1), (0, 2), (1, 1)}
+
+    def test_a_null_pdg_key_keeps_every_pdg(self, padded, build):
+        config, _, _ = padded(n_events=(6,), pdgs=self.MIXED)
+        config["data"]["incident_pdg_key"] = None
+        config["simulate_pdgs"] = [-11, 11, 22]
+
+        assert len(build(config)) == 6
+
+    def test_a_pdg_key_missing_from_the_file_keeps_everything(self, padded, build):
+        config, _, pattern = padded(n_events=(6,))
+        drop_key(pattern.format(0), "pdg")
+        config["data"]["incident_pdg_key"] = "pdg"
+        config["simulate_pdgs"] = [-11]  # would drop every event if consulted
+
+        assert len(build(config)) == 6
+
+    def test_no_simulated_pdg_in_the_file_gives_an_empty_dataset(self, padded, build):
+        config, _, _ = padded(n_events=(6,), pdgs=211)
+        config["data"]["incident_pdg_key"] = "pdg"
+        config["simulate_pdgs"] = [22]
+
+        assert len(build(config)) == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -954,6 +1108,42 @@ class TestGetItem:
 
         assert build(config)[0]["points"].shape[2] == 4
 
+    def test_incident_pdg_is_one_hot_encoded(self, padded, build):
+        config, _, _ = padded(n_events=(6,), pdgs=[22, 211, -11, 22, 11, 130])
+        config["data"]["incident_pdg_key"] = "pdg"
+        config["simulate_pdgs"] = [-11, 11, 22]
+        config["model"]["cond_features"] = [
+            "incident_energy",
+            "incident_direction",
+            "incident_pdg",
+        ]
+        built = build(config)
+
+        batch = built[0]
+
+        assert batch["incident_pdg"].shape == (built.bs, 3)
+        np.testing.assert_array_equal(batch["incident_pdg"].sum(axis=1), 1)
+
+    def test_each_onehot_row_marks_its_own_pdg(self, padded, build):
+        pdgs = [22, 211, -11, 22, 11, 130]
+        config, per_file, _ = padded(n_events=(6,), pdgs=pdgs)
+        config["data"]["incident_pdg_key"] = "pdg"
+        config["simulate_pdgs"] = [-11, 11, 22]
+        config["model"]["cond_features"] = [
+            "incident_energy",
+            "incident_direction",
+            "incident_pdg",
+        ]
+        built = build(config)
+
+        batch = built[0]
+
+        rows = built.index_list[built.choose_idxs(0)]
+        expected = (
+            gather(per_file, rows, "pdg")[:, None] == np.array([-11, 11, 22])[None, :]
+        ).astype(int)
+        np.testing.assert_array_equal(batch["incident_pdg"], expected)
+
     def test_repeated_reads_agree_when_quantized(self, padded, build):
         config, _, _ = padded()
         built = build(config)
@@ -971,6 +1161,29 @@ class TestGetItem:
                 built.index_list[built.choose_idxs(idx)]}
 
         assert seen == {0, 1, 2}
+
+
+# --------------------------------------------------------------------------- #
+# AbstractBase.__len__
+# --------------------------------------------------------------------------- #
+class TestLen:
+    def test_reports_the_cached_length(self):
+        assert len(Stub(length=17)) == 17
+
+    def test_counts_every_event_across_every_file(self, padded, build):
+        config, per_file, _ = padded(n_events=(4, 6, 5))
+
+        built = build(config)
+
+        assert len(built) == 15
+        assert len(built) == len(built.index_list)
+
+    def test_only_the_requested_part_is_counted(self, padded, build):
+        config, _, _ = padded(n_events=(4, 6, 5))
+
+        # val_range is 1..2, i.e. the middle file only
+        assert len(build(config, part="val")) == 6
+        assert len(build(config, part="test")) == 4
 
 
 # --------------------------------------------------------------------------- #
@@ -1084,6 +1297,298 @@ class TestPointCloudDatasetUnordered:
 
 
 # --------------------------------------------------------------------------- #
+# ShowerDataDataset construction
+# --------------------------------------------------------------------------- #
+@needs_showerdata
+class TestShowerDataConstruction:
+    def test_it_is_a_torch_dataset(self, showers, build):
+        config, _, _ = showers()
+
+        assert isinstance(build(config), torch.utils.data.Dataset)
+
+    def test_attributes_come_from_the_config(self, showers, build):
+        config, _, _ = showers()
+
+        built = build(config)
+
+        assert built.bs == config["training"]["batch_size"]
+        assert built.max_ds_seq_len == config["training"]["max_points_per_event"]
+        assert built.retain_quantized is config["training"]["retain_quantized"]
+        assert built._len == len(built.index_list)
+
+    def test_cond_features_and_points_are_mapped_to_disk_names(self, showers, build):
+        config, _, _ = showers()
+
+        assert build(config).keys_to_include == {
+            "incident_energy": "energies",
+            "incident_direction": "directions",
+            "incident_pdg": "pdg",
+            "points": "points",
+        }
+
+    def test_the_onehot_order_comes_from_simulate_pdgs(self, showers, build):
+        config, _, _ = showers()
+
+        np.testing.assert_array_equal(
+            build(config).pdg_onehot_order, config["simulate_pdgs"]
+        )
+
+    def test_offset_is_a_cell_divided_into_sub_cells(self, showers, build):
+        config, _, _ = showers()
+        config["data"]["cell_size"] = 10.0
+        config["data"]["divisions_per_cell"] = 4
+
+        assert build(config).offset == 2.5
+
+    def test_the_padding_setting_is_never_consulted(self, showers, build):
+        """ShowerData is assumed back padded; unlike ``PointCloudDataset`` the
+        ``padding`` entry is not even validated, so a bogus value builds fine
+        and ``front_padded`` is always False."""
+        config, _, _ = showers()
+        config["data"]["padding"] = "sideways"
+
+        assert build(config).front_padded is False
+
+    def test_opens_one_ShowerDataFile_per_file_in_the_range(self, showers, build):
+        config, _, _ = showers(n_events=(6, 6, 6))
+
+        built = build(config)
+
+        assert len(built.open_files) == 3
+        assert all(
+            isinstance(f, dataset.showerdata.ShowerDataFile) for f in built.open_files
+        )
+
+    @pytest.mark.parametrize("part, expected", [("train", 3), ("val", 1), ("test", 1)])
+    def test_each_part_reads_its_own_range(self, showers, build, part, expected):
+        config, _, _ = showers(n_events=(6, 6, 6))
+
+        assert len(build(config, part=part).open_files) == expected
+
+    def test_an_empty_range_raises(self, showers, build):
+        config, _, _ = showers(n_events=(6, 6))
+        config["data"]["train_range_start"] = 1
+        config["data"]["train_range_end"] = 1
+
+        with pytest.raises(FileNotFoundError, match="No files found at"):
+            build(config)
+
+
+# --------------------------------------------------------------------------- #
+# ShowerDataDataset._make_index_list
+# --------------------------------------------------------------------------- #
+@needs_showerdata
+class TestShowerDataMakeIndexList:
+    def test_shape_and_dtype(self, showers, build):
+        config, _, _ = showers(n_events=(4, 6))
+
+        index_list = build(config).index_list
+
+        assert index_list.shape == (10, 3)
+        assert index_list.dtype == int
+
+    def test_sorted_by_point_count(self, showers, build):
+        config, _, _ = showers(n_events=(6, 6, 6))
+
+        counts = build(config).index_list[:, 0]
+
+        assert np.all(np.diff(counts) >= 0)
+
+    def test_point_counts_match_the_file(self, showers, build):
+        config, per_file, _ = showers(n_events=(4, 6))
+
+        for n_pts, file_n, event_n in build(config).index_list:
+            assert n_pts == per_file[file_n]["n_points"][event_n]
+
+    def test_counts_are_capped_at_max_points_per_event(self, showers, build):
+        config, _, _ = showers(n_events=(6,), n_points=5, n_real=np.full(6, 5))
+        config["training"]["max_points_per_event"] = 2
+
+        assert build(config).index_list[:, 0].max() == 2
+
+    def test_events_with_unlisted_pdgs_are_dropped(self, showers, build):
+        config, _, _ = showers(n_events=(6,), pdgs=[22, 211, -11, 22, 11, 130])
+
+        built = build(config)
+
+        assert len(built) == 4
+        assert {int(e) for _, _, e in built.index_list} == {0, 2, 3, 4}
+
+    def test_filtering_is_per_event_not_per_file(self, showers, build):
+        config, _, _ = showers(n_events=(3, 3), pdgs=[22, 211, 22])
+
+        pairs = {(int(f), int(e)) for _, f, e in build(config).index_list}
+
+        assert pairs == {(0, 0), (0, 2), (1, 0), (1, 2)}
+
+    def test_the_pdg_filter_cannot_be_switched_off(self, showers, build):
+        """Unlike the padded formats there is no opt-out: the class reads the
+        ``pdg`` attribute directly, so ``incident_pdg_key: null`` does not
+        disable the ``simulate_pdgs`` filter."""
+        config, _, _ = showers(n_events=(6,), pdgs=[22, 211, -11, 22, 11, 130])
+        config["data"]["incident_pdg_key"] = None
+        config["model"]["cond_features"] = ["incident_energy", "incident_direction"]
+
+        assert len(build(config)) == 4
+
+    def test_no_simulated_pdg_in_the_file_gives_an_empty_dataset(self, showers, build):
+        config, _, _ = showers(n_events=(6,), pdgs=211)
+
+        assert len(build(config)) == 0
+
+
+# --------------------------------------------------------------------------- #
+# ShowerDataDataset.__getitem__
+# --------------------------------------------------------------------------- #
+@needs_showerdata
+class TestShowerDataGetItem:
+    def test_the_batch_holds_the_configured_keys_plus_n_points(self, showers, build):
+        config, _, _ = showers()
+
+        assert set(build(config)[0]) == {
+            "incident_energy",
+            "incident_direction",
+            "incident_pdg",
+            "points",
+            "n_points",
+        }
+
+    def test_shapes(self, showers, build):
+        config, _, _ = showers()
+        batch_size = config["training"]["batch_size"]
+
+        batch = build(config)[0]
+
+        assert batch["points"].shape[0] == batch_size
+        assert batch["points"].shape[-1] == 4
+        assert batch["incident_energy"].shape == (batch_size, 1)
+        assert batch["incident_direction"].shape == (batch_size, 3)
+        assert batch["incident_pdg"].shape == (batch_size, 3)
+        assert batch["n_points"].shape == (batch_size, 1)
+
+    @pytest.mark.parametrize("idx", [0, 1, 5, 11])
+    def test_per_event_values_match_the_file(self, showers, build, idx):
+        config, per_file, _ = showers(n_events=(6, 6))
+        built = build(config)
+
+        batch = built[idx]
+
+        rows = built.index_list[built.choose_idxs(idx)]
+        np.testing.assert_allclose(
+            batch["incident_energy"][:, 0], gather(per_file, rows, "energies")
+        )
+        np.testing.assert_allclose(
+            batch["incident_direction"], gather(per_file, rows, "directions")
+        )
+
+    def test_each_onehot_row_marks_its_own_pdg(self, showers, build):
+        config, per_file, _ = showers(n_events=(6,))
+        built = build(config)
+
+        batch = built[0]
+
+        rows = built.index_list[built.choose_idxs(0)]
+        expected = (
+            gather(per_file, rows, "pdg")[:, None]
+            == np.array(config["simulate_pdgs"])[None, :]
+        ).astype(int)
+        np.testing.assert_array_equal(batch["incident_pdg"], expected)
+
+    def test_every_batch_row_is_a_kept_pdg(self, showers, build):
+        config, _, _ = showers(n_events=(8,), pdgs=[22, 211, -11, 22, 11, 211, 22, 11])
+        built = build(config)
+
+        for idx in range(len(built)):
+            np.testing.assert_array_equal(built[idx]["incident_pdg"].sum(axis=1), 1)
+
+    def test_n_points_is_the_first_column_of_the_index_list(self, showers, build):
+        config, _, _ = showers(n_events=(6,))
+        built = build(config)
+
+        batch = built[0]
+
+        rows = built.index_list[built.choose_idxs(0)]
+        np.testing.assert_array_equal(batch["n_points"][:, 0], rows[:, 0])
+
+    def test_events_arrive_in_point_count_order(self, showers, build):
+        config, _, _ = showers(n_events=(8,))
+
+        batch = build(config)[2]
+
+        assert np.all(np.diff(batch["n_points"][:, 0]) >= 0)
+
+    def test_points_match_the_file(self, showers, build):
+        config, per_file, _ = showers(n_events=(6,), n_points=5, n_real=np.full(6, 5))
+        built = build(config)
+
+        batch = built[0]
+
+        rows = built.index_list[built.choose_idxs(0)]
+        np.testing.assert_array_equal(batch["points"], gather(per_file, rows, "points"))
+
+    def test_points_are_never_trimmed_to_the_batch(self, showers, build):
+        """The batch keeps the full on-disk width instead of the widest event.
+
+        ``ShowerDataFile[i]`` returns points shaped ``(1, max_points, 4)``, so
+        the stacked batch is 4-D and ``_event_processing`` trims the leading
+        length-1 axis rather than the point axis.  The trailing ``squeeze()``
+        removes that axis again, leaving ``(bs, max_points, 4)`` -- correct
+        values, but padding that ``PointCloudDataset`` would have cut away.
+        """
+        config, _, _ = showers(
+            n_events=(6,), n_points=5, n_real=[4, 4, 4, 4, 5, 5]
+        )
+        built = build(config)
+
+        batch = built[0]  # two events with 4 real points each
+
+        assert batch["n_points"].max() == 4
+        assert batch["points"].shape[1] == 5
+
+    def test_the_trim_reads_the_fourth_point_not_the_energies(self, showers, build):
+        """A batch can come back with zero-width points.
+
+        On the 4-D stack, ``event[:, :, 3]`` is the fourth point of each event
+        rather than the energy column, so the computed trim length is 0 or 1:
+        1 whenever some chosen event has any positive entry in its fourth
+        point, 0 otherwise.  Here every event holds three real points, the
+        fourth slot is all padding, and the whole points array is emptied.
+        """
+        config, _, _ = showers(n_events=(6,), n_points=6, n_real=np.full(6, 3))
+        built = build(config)
+
+        batch = built[0]
+
+        assert batch["points"].size == 0
+        assert batch["points"].shape[1] == 0
+
+    def test_repeated_reads_agree_when_quantized(self, showers, build):
+        config, _, _ = showers()
+        built = build(config)
+
+        first, second = built[0], built[0]
+
+        for key in first:
+            np.testing.assert_allclose(first[key], second[key])
+
+    def test_events_are_drawn_from_every_file(self, showers, build):
+        config, _, _ = showers(n_events=(4, 4))
+        built = build(config)
+
+        seen = {int(f) for idx in range(len(built)) for _, f, _ in
+                built.index_list[built.choose_idxs(idx)]}
+
+        assert seen == {0, 1}
+
+    def test_only_the_requested_part_is_counted(self, showers, build):
+        config, _, _ = showers(n_events=(4, 6, 5))
+
+        # val_range is 1..2, i.e. the middle file only
+        assert len(build(config, part="val")) == 6
+        assert len(build(config, part="test")) == 4
+
+
+# --------------------------------------------------------------------------- #
 # from_config dispatch
 # --------------------------------------------------------------------------- #
 class TestFromConfigDispatch:
@@ -1153,8 +1658,31 @@ class TestFromConfigEndToEnd:
             "n_points",
         }
 
+    @needs_showerdata
+    def test_builds_a_usable_showerdata_dataset(self, showers, build):
+        config, per_file, _ = showers()
+
+        built = build(config)
+
+        assert isinstance(built, dataset.ShowerDataDataset)
+        assert len(built) == len(per_file[0]["energies"])
+        assert set(built[0]) == {
+            "incident_energy",
+            "incident_direction",
+            "incident_pdg",
+            "points",
+            "n_points",
+        }
+
     @pytest.mark.parametrize("part", ["train", "val", "test"])
     def test_every_part_can_be_built(self, padded, build, part):
         config, _, _ = padded(n_events=(6, 6, 6))
+
+        assert len(build(config, part=part)) > 0
+
+    @needs_showerdata
+    @pytest.mark.parametrize("part", ["train", "val", "test"])
+    def test_every_showerdata_part_can_be_built(self, showers, build, part):
+        config, _, _ = showers(n_events=(6, 6, 6))
 
         assert len(build(config, part=part)) > 0

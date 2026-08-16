@@ -14,8 +14,11 @@ if str(REPO_ROOT) not in sys.path:
 
 try:  # pragma: no cover
     import showerdata  # noqa: F401
+
+    HAS_SHOWERDATA = True
 except ImportError:  # pragma: no cover
     sys.modules["showerdata"] = MagicMock()
+    HAS_SHOWERDATA = False
 
 import h5py  # noqa: E402
 
@@ -32,6 +35,7 @@ def make_padded_file(
     energy_ndim=1,
     n_points_ndim=1,
     points_key="events",
+    pdgs=22,
     seed=0,
 ):
     rng = np.random.default_rng(seed)
@@ -55,18 +59,24 @@ def make_padded_file(
 
     energy_ds = incident_energy[:, None] if energy_ndim == 2 else incident_energy
     n_points_ds = n_real[:, None] if n_points_ndim == 2 else n_real
+    if np.isscalar(pdgs):
+        pdgs = np.full(n_events, pdgs, dtype=int)
+    else:
+        pdgs = np.asarray(pdgs, dtype=int)
 
     with h5py.File(path, "w") as handle:
         handle.create_dataset(points_key, data=on_disk)
         handle.create_dataset("energy", data=energy_ds)
         handle.create_dataset("n_points", data=n_points_ds)
         handle.create_dataset("p_norm_local", data=direction)
+        handle.create_dataset("pdg", data=pdgs)
 
     return {
         "events": events,
         "energy": incident_energy,
         "n_points": n_real,
         "p_norm_local": direction,
+        "pdg": pdgs,
     }
 
 
@@ -77,9 +87,69 @@ def make_empty_padded_file(path, points_key="events"):
     return path
 
 
-def base_config(dataset_path, *, fmt="padded", roll_axis=False, padding="back"):
+def make_showerdata_file(
+    path,
+    *,
+    n_events=6,
+    n_points=5,
+    pdgs=None,
+    n_real=None,
+    seed=0,
+):
+    """Write a real ShowerData file and return the truth dict for it.
+
+    The truth keys are the on-disk attribute names (``points``, ``energies``,
+    ``directions``, ``pdg``) plus ``n_points``, so ``(file_idx, event_idx)``
+    pairs out of an ``index_list`` can be looked up directly.  ``pdgs`` may be
+    a scalar, an array, or ``None`` for a deterministic cycle through the
+    ``config/showerdata.yaml`` simulation set ``(-11, 11, 22)``.  Arrays are
+    written as float32, matching what ``ShowerDataFile`` hands back, so the
+    truth compares exactly.
+    """
+    if not HAS_SHOWERDATA:  # pragma: no cover - guarded by skips in the tests
+        raise RuntimeError("make_showerdata_file needs the real showerdata package")
+
+    rng = np.random.default_rng(seed)
+
+    if n_real is None:
+        n_real = rng.integers(1, n_points + 1, size=n_events)
+    else:
+        n_real = np.asarray(n_real, dtype=int)
+    points = np.zeros((n_events, n_points, N_FEATURES), dtype=np.float32)
+    for i, n in enumerate(n_real):
+        points[i, :n, :3] = rng.normal(size=(n, 3))
+        points[i, :n, 3] = rng.uniform(0.1, 1.0, size=n)
+
+    energies = rng.uniform(10.0, 100.0, size=n_events).astype(np.float32)
+    directions = rng.normal(size=(n_events, 3))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    directions = directions.astype(np.float32)
+
+    if pdgs is None:
+        pdgs = np.resize([-11, 11, 22], n_events)
+    elif np.isscalar(pdgs):
+        pdgs = np.full(n_events, pdgs, dtype=int)
+    else:
+        pdgs = np.asarray(pdgs, dtype=int)
+
+    showers = showerdata.Showers(
+        points=points, energies=energies, pdg=pdgs, directions=directions
+    )
+    showerdata.save(showers, path, overwrite=True)
+
     return {
+        "points": points,
+        "energies": energies,
+        "directions": directions,
+        "pdg": pdgs,
+        "n_points": n_real,
+    }
+
+
+def base_config(dataset_path, *, fmt="padded", roll_axis=False, padding="back"):
+    config = {
         "device": "cpu",
+        "simulate_pdgs": [22],
         "preprocessing": {
             "conditioning": None,
             "features": [
@@ -99,6 +169,7 @@ def base_config(dataset_path, *, fmt="padded", roll_axis=False, padding="back"):
         },
         "data": {
             "dataset_path": dataset_path,
+            "contains_pdgs": [22],
             "test_range_start": 0,
             "test_range_end": 1,
             "val_range_start": 1,
@@ -131,6 +202,7 @@ def base_config(dataset_path, *, fmt="padded", roll_axis=False, padding="back"):
         },
         "detector": {
             "orientation": "hdf5:xyz==global:zxy",
+            "Ymin": 1811.0,
             # layers 0 and 1 are ecal, layer 2 is hcal, so the two thicknesses
             # and hcal_start are all exercised by a three layer stack
             "cell_thickness_ecal": 0.5,
@@ -146,6 +218,23 @@ def base_config(dataset_path, *, fmt="padded", roll_axis=False, padding="back"):
             "retain_quantized": True,
         },
     }
+    if fmt == "showerdata":
+        # mirror config/showerdata.yaml: the incident particle is a condition,
+        # several pdgs are simulated, and the on-disk keys have new names
+        config["simulate_pdgs"] = [-11, 11, 22]
+        config["model"]["cond_features"] = [
+            "incident_energy",
+            "incident_direction",
+            "incident_pdg",
+        ]
+        config["model"]["cond_dim"] = 7
+        config["data"]["contains_pdgs"] = [-11, 11, 22, 211]
+        config["data"]["points_key"] = "points"
+        config["data"]["incident_pdg_key"] = "pdg"
+        config["data"]["incident_energy_key"] = "energies"
+        config["data"]["incident_direction_key"] = "directions"
+        config["data"]["n_points_key"] = None
+    return config
 
 
 @pytest.fixture(autouse=True)

@@ -6,33 +6,43 @@ However, they test it without real oversight, so if you feel it's appropriate to
 the scripts in the scripts folder are the ultimate test for consequences.
 
 ```bash
-pip install pytest pytest-mock
+pip install pytest pytest-mock showerdata
 pytest                      # from the repo root
 pytest tests/test_read_write.py -k orientation
-pytest tests/test_detector_map.py -k hcal
+pytest tests/test_dataset.py -k ShowerData
 ```
 
 `pytest.ini` belongs at the repo root, not in `tests/`.
 
 ## Scope
 
-Only the `padded` and `padded_unordered` formats. `showerdata` is stubbed in
-`conftest.py` so the package need not be installed; `test_diffusion.py` skips
-itself if `k_diffusion` is missing, because `src/diffusion.py` subclasses out of
-it and cannot be stubbed.
+All three data formats: `padded`, `padded_unordered` and `showerdata`.
+`test_dataset.py` exercises `ShowerDataDataset` against real ShowerData files
+written with the `showerdata` package (it is on PyPI); when the package is not
+installed it is stubbed in `conftest.py` so the rest of the suite still runs,
+and the ShowerData tests skip themselves. `test_diffusion.py` skips itself if
+`k_diffusion` is missing, because `src/diffusion.py` subclasses out of it and
+cannot be stubbed.
 
 `conftest.py` writes real HDF5 files with the `config/default.yaml` key names
-(`events`, `energy`, `n_points`, `p_norm_local`) and covers both the
-`(n_events, n_points, n_features)` and `roll_axis`
+(`events`, `energy`, `n_points`, `p_norm_local`, plus a `pdg` column) and
+covers both the `(n_events, n_points, n_features)` and `roll_axis`
 `(n_events, n_features, n_points)` layouts, plus `(n_events,)` and
-`(n_events, 1)` per-event columns.
+`(n_events, 1)` per-event columns. `make_showerdata_file` writes real
+ShowerData files and returns a truth dict under the on-disk attribute names
+(`points`, `energies`, `directions`, `pdg`).
 
-`base_config` mirrors `config/default.yaml`. Its `detector` section carries the
-ecal/hcal pair rather than a single `cell_thickness`, with `hcal_start` of 2
-over three layers, so layers 0 and 1 are ecal and layer 2 is hcal — a stack
-small enough to read but which still exercises the split. The `data` and
-`detector` sections deliberately disagree on every number, so a test that passes
-has read from the section it meant to.
+`base_config` mirrors `config/default.yaml`, including `simulate_pdgs: [22]`
+and `incident_pdg_key: null`, so by default no pdg filtering happens and the
+older single-pdg tests read exactly as before; tests that want several pdgs
+set `simulate_pdgs` and the key themselves. With `fmt="showerdata"` it mirrors
+`config/showerdata.yaml` instead: the showerdata key names, `incident_pdg` as
+a condition, and `simulate_pdgs: [-11, 11, 22]`. Its `detector` section
+carries the ecal/hcal pair rather than a single `cell_thickness`, with
+`hcal_start` of 2 over three layers, so layers 0 and 1 are ecal and layer 2 is
+hcal — a stack small enough to read but which still exercises the split. The
+`data` and `detector` sections deliberately disagree on every number, so a
+test that passes has read from the section it meant to.
 
 An autouse fixture clears the `lru_cache` on `get_possible_files`, `get_files`
 and `get_n_events` around every test. Without it results leak between tests.
@@ -46,9 +56,11 @@ that looks unintended. Worth a look before changing the code:
 | --- | --- |
 | `choose_idxs` | The last event is unreachable once the dataset is longer than `2 * bs`, so one event never appears in an epoch. `PointCloudDatasetUnordered` does not have this problem. |
 | `choose_idxs` | An odd `batch_size` gives `bs - 1` events in every middle batch and `bs` at the ends, so the batch size is not constant across an epoch. |
-| `_make_index_list` | The lookup is the literal string `"n_points"`; `config["data"]["n_points_key"]` is never consulted, so a dataset storing counts under another name silently falls back to recounting energies. |
 | `_make_index_list` | `n_points` shaped `(n_events, 1)` breaks the ragged `np.array(...)` call. Marked `xfail`. |
-| `_event_processing` | `config["data"]["padding"]` is trusted, not verified. Naming the wrong end returns batches of pure padding, with no warning. |
+| `pdgs_to_onehot` | A pdg missing from `simulate_pdgs` encodes as an all-zero row rather than raising; the index-list filter normally keeps such events out of batches. Handed an `(n, 1)` column it returns a 3-D array, which `ShowerDataDataset.__getitem__` relies on its own `squeeze()` to flatten. |
+| `ShowerDataDataset._make_index_list` | The pdg filter always reads the `pdg` attribute; `incident_pdg_key: null` does not switch it off, unlike the padded formats. |
+| `ShowerDataDataset.__getitem__` | `ShowerDataFile[i]` keeps a leading length-1 axis, so the batch handed to `_event_processing` is 4-D and the trim cuts that axis instead of the point axis. Batches keep the full on-disk width (values are still right, the padding `PointCloudDataset` would remove stays), and the computed "trim length" is read off the fourth point slot — a batch whose chosen events are all zero there comes back with zero-width points. |
+| `_event_processing` | `config["data"]["padding"]` is trusted, not verified. Naming the wrong end returns batches of pure padding, with no warning. `ShowerDataDataset` never consults it at all — even a bogus value builds. |
 | `_get_prior_event_axes` | A `cond_features` entry whose `*_key` is `None` stays in `keys_to_include` but is dropped here, so `__getitem__` raises `KeyError`. |
 | `fuzz_parallel`, `fuzz_perpendicular` | Neither consults the energy column when moving points, so zero-energy padding is displaced too. `fuzz_perpendicular` builds a `done` mask and never reads it. |
 | `get_n_events` | Returns a scalar for one file and a list for several. If some files are empty, several files can still yield a scalar, which `read_raw_regaxes` then indexes with `n_events[i]`. |
