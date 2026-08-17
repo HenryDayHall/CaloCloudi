@@ -77,6 +77,7 @@ def get_event_idxs(
     dataset_format,
     pdg_key,
     pdgs_to_include,
+    fallback_key,
 ):
     if isinstance(pdgs_to_include, list):
         pdgs_to_include = tuple(pdgs_to_include)
@@ -87,6 +88,7 @@ def get_event_idxs(
         dataset_format,
         pdg_key,
         pdgs_to_include,
+        fallback_key,
     )
 
 
@@ -98,6 +100,7 @@ def _get_event_idxs(
     dataset_format,
     pdg_key,
     pdgs_to_include,
+    fallback_key,
 ):
     """
     Get the number of events in the dataset
@@ -120,13 +123,17 @@ def _get_event_idxs(
     n_events = []
     idxs = []
     for file_name in get_files(dataset_path, file_range_start, file_range_end):
-        if dataset_format == "showerdata":
-            loaded = showerdata.ShowerDataFile(file_name)
-            pdgs = getattr(loaded[:], pdg_key)
+        if pdg_key is not None:
+            if dataset_format == "showerdata":
+                loaded = showerdata.ShowerDataFile(file_name)
+                pdgs = getattr(loaded[:], pdg_key)
+            else:
+                with h5py.File(file_name, "r") as on_disk:
+                    pdgs = on_disk[pdg_key][:]
+            idxs.append(np.where(np.isin(pdgs, pdgs_to_include))[0])
         else:
             with h5py.File(file_name, "r") as on_disk:
-                pdgs = on_disk[pdg_key][:]
-        idxs.append(np.where(np.isin(pdgs, pdgs_to_include))[0])
+                idxs.append(np.arange(len(on_disk[fallback_key][:])))
         n_events.append(len(idxs[-1]))
     return n_events, idxs
 
@@ -142,6 +149,7 @@ def event_idxs_in_part(config, part):
         config["data"]["format"],
         config["data"]["incident_pdg_key"],
         pdgs_to_include,
+        config["data"]["points_key"],
     )
     return n_events, idxs
 
@@ -342,6 +350,7 @@ def read_raw_regaxes(
         config["data"]["format"],
         config["data"]["incident_pdg_key"],
         config["simulate_pdgs"],
+        config["data"]["points_key"],
     )
     n_total_events = np.sum(n_events)
     total_size = min(100 if total_size is None else total_size, n_total_events)

@@ -87,6 +87,8 @@ for epoch in range(start_epoch + 1, end_epoch + 1):
             [batch_features.shape[0]], device=batch_features.device
         )
 
+        setup["optimiser"].zero_grad()
+
         loss = model.get_loss(batch_features, noise, sigma, batch_cond)
         loss.backward()
         grad_norm = clip_grad_norm_(
