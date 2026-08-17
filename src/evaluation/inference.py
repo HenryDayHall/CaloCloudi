@@ -32,18 +32,18 @@ def pdg_to_onehot_in_full_cond(config, cond):
     if "incident_pdg" not in cond_features:
         return cond
     cond_columns = [
-        config["data"][f"{name}_key"] for name in config["model"]["cond_features"]
+        config["data"][f"{name}_key"] for name in cond_features
     ]
     col_lengths = read_write.get_per_event_length(config, cond_columns)
     col_lengths = [col_lengths[name] for name in cond_columns]
     pdg_pos = 0
-    for name, length in zip(cond_columns, col_lengths):
+    for name, length in zip(cond_features, col_lengths):
         if name == "incident_pdg":
             break
         pdg_pos += length
     incident_pdg = cond[:, pdg_pos : pdg_pos + 1]
     pdg_onehot_order = np.array(config["simulate_pdgs"])
-    onehot = pdgs_to_onehot(pdg_onehot_order, incident_pdg)
+    onehot = pdgs_to_onehot(pdg_onehot_order, incident_pdg.squeeze())
     cond_before_pdg = cond[:, :pdg_pos]
     cond_after_pdg = cond[:, pdg_pos + 1 :]
     cond = np.concatenate([cond_before_pdg, onehot, cond_after_pdg], axis=1)
