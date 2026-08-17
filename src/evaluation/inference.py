@@ -41,9 +41,9 @@ def pdg_to_onehot_in_full_cond(config, cond):
         if name == "incident_pdg":
             break
         pdg_pos += length
-    incident_pdg = cond[:, pdg_pos : pdg_pos + 1]
+    incident_pdg = cond[:, pdg_pos]
     pdg_onehot_order = np.array(config["simulate_pdgs"])
-    onehot = pdgs_to_onehot(pdg_onehot_order, incident_pdg.squeeze())
+    onehot = pdgs_to_onehot(pdg_onehot_order, incident_pdg)
     cond_before_pdg = cond[:, :pdg_pos]
     cond_after_pdg = cond[:, pdg_pos + 1 :]
     cond = np.concatenate([cond_before_pdg, onehot, cond_after_pdg], axis=1)

@@ -1,7 +1,4 @@
 # ASAP
-- need to check out the ema model, is it better than the main model
-    * get summary stats from it
-    * plot summary stats
 - need to get the student model (distilled) training
     * train
     * get summary stats from it

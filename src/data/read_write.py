@@ -125,7 +125,7 @@ def _get_event_idxs(
             pdgs = getattr(loaded[:], pdg_key)
         else:
             with h5py.File(file_name, "r") as on_disk:
-                pdgs = on_disk[pdg_key]
+                pdgs = on_disk[pdg_key][:]
         idxs.append(np.where(np.isin(pdgs, pdgs_to_include))[0])
         n_events.append(len(idxs[-1]))
     return n_events, idxs

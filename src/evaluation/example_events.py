@@ -28,7 +28,7 @@ from .inference import (
 )
 from .plotting import center_arrow
 from .summarise import target_to_physical
-from ..data.read_write import n_events_in_part
+from ..data.read_write import event_idxs_in_part
 
 
 def _project_points(points: np.ndarray, view: str) -> tuple:
@@ -154,7 +154,8 @@ def plot_example_events(
     config = Sampler.get_config_from_model_path(model_path)
     config["device"] = "cuda" if torch.cuda.is_available() else "cpu"
 
-    n_events = sum(n_events_in_part(config, data_part))
+    n_events, idxs = event_idxs_in_part(config, data_part)
+    n_events = sum(n_events)
     if event_index is None:
         event_index = int(np.random.randint(n_events))
     else:
