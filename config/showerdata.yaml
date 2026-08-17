@@ -124,6 +124,8 @@ training:
   checkpoint_time_interval_min: 30
   checkpoint_batch_interval: -1
   validation_interval: 1000
+  cm_random_init: false
+  start_ema: 0.95
 
 
   

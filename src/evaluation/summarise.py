@@ -145,7 +145,7 @@ class EMDCalculator(ReferenceBase):
 
     @staticmethod
     def get_output_path_from_model_path(model_path):
-        output_path = '.'.join(model_path.split(".")[:-1]) + "_emd.npz"
+        output_path = ".".join(model_path.split(".")[:-1]) + "_emd.npz"
         return output_path
 
     @classmethod
@@ -276,8 +276,8 @@ def cell_energies(cells, bins=None):
     cells : np.ndarray
         Array of shape ``[n_events, n_cells, 4]`` with features x, y, z, e.
     bins : int, or list of bins, optional
-        Energy bins, by default 50 logarithmically spaced bins between
-        ``0.001`` and ``100``.
+        Energy bins, by default 100 logarithmically spaced bins between
+        ``0.000001`` and ``100``.
 
     Returns
     -------
@@ -288,7 +288,7 @@ def cell_energies(cells, bins=None):
         Array of shape ``[n_bins + 1]`` with the energy bin edges.
     """
     if bins is None:
-        bins = np.logspace(np.log10(10**(-6)), np.log10(0.1), 50)
+        bins = np.logspace(np.log10(10 ** (-6)), np.log10(100), 100)
     mask = _cell_mask(cells)
     energies = cells[:, :, 3]
     n_events = cells.shape[0]
@@ -482,6 +482,23 @@ def target_to_physical(points, config):
 
 class SingularsMixin:
     def calculate_singulars(self, cond, cells):
+        singulars = self._calculate_singulars(cond, cells)
+        pdg_list = self.config["simulate_pdgs"]
+        n_pdgs_simulated = len(pdg_list)
+        if n_pdgs_simulated > 1:
+            pdg_col_num = inference.get_pdg_col_number(self.config)
+            pdg_onehot = cond[:, pdg_col_num : pdg_col_num + n_pdgs_simulated].astype(
+                int
+            ).astype(bool)
+            for pdg_n, pdg in enumerate(pdg_list):
+                pdg_mask = pdg_onehot[:, pdg_n]
+                pdg_singulars = self._calculate_singulars(cond[pdg_mask], cells[pdg_mask])
+                for k, v in pdg_singulars.items():
+                    key = f"pdg_{pdg}_{k}"
+                    singulars[key] = v
+        return singulars
+
+    def _calculate_singulars(self, cond, cells):
         singulars = {}
         directions = cond[:, [2, 0, 1]]
         singulars["cond"] = cond
@@ -636,7 +653,7 @@ class ModelSummary(SingularsMixin):
 
     @staticmethod
     def get_output_path_from_model_path(model_path):
-        output_path = '.'.join(model_path.split(".")[:-1]) + "_summary.npz"
+        output_path = ".".join(model_path.split(".")[:-1]) + "_summary.npz"
         return output_path
 
 
@@ -665,6 +682,7 @@ class ReferenceSummary(ReferenceBase, SingularsMixin):
             total_size=self.total_size,
             per_event_cols=cond_columns,
         )
+        cond = inference.pdg_to_onehot_in_full_cond(self.config, cond)
         physical_points, point_layer_ids = target_to_physical(target, self.config)
         del target
         physical_points = inference.unshift_points(
@@ -693,3 +711,28 @@ class ReferenceSummary(ReferenceBase, SingularsMixin):
             printer=printer,
         )
         return this
+
+
+def complete_model(model_path, n_events):
+    output_path = ModelSummary.get_output_path_from_model_path(model_path)
+    if not os.path.exists(output_path):
+        print(f"Summarising to {output_path}")
+        ModelSummary.from_model_path(model_path, data_part="test", total_size=n_events)
+    else:
+        print(f"Already summarised to {output_path}")
+    ema_model_path = model_path.replace("_model.pt", "_ema_model.pt")
+    if os.path.exists(ema_model_path):
+        print("EMA model exists")
+        output_path = ModelSummary.get_output_path_from_model_path(ema_model_path)
+        if not os.path.exists(output_path):
+            print(f"Summarising to {output_path}")
+            ModelSummary.from_model_path(
+                ema_model_path, data_part="test", total_size=n_events
+            )
+        else:
+            print(f"Already summarised to {output_path}")
+    else:
+        print("EMA model does not exist")
+    ReferenceSummary.from_model_path(model_path, data_part="test", total_size=n_events)
+    print("Done summaries")
+

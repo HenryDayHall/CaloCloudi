@@ -253,3 +253,28 @@ def plot_example_events(
         print(f"Figure saved to {output_path}")
     else:
         plt.show()
+
+
+def plot_and_save(model_path, event_indices=None):
+    if event_indices is None:
+        event_indices = [0, 10, 100, 1000]
+
+    model_base = '.'.join(model_path.split('.')[:-1])
+
+    for event_index in event_indices:
+        print(event_index)
+        for level in ["data", "physical", "cells"]:
+            print(level)
+            output_path = model_base + f'_{level}_{event_index}.png'
+            if os.path.exists(output_path):
+                print(f"Already plotted to {output_path}")
+                continue
+            print(f"Plotting to {output_path}")
+            plot_example_events(
+                model_path=model_path,
+                event_index=event_index,
+                level=level,
+                data_part="test",
+                output_path=output_path
+            )
+

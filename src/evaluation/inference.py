@@ -13,11 +13,11 @@ from ..detector_map import create_map, find_layers, get_layer_centers
 
 @contextmanager
 def evaluating(net):
-    '''
+    """
     Temporarily switch to evaluation mode.
     Attribution; Christoph Heindl
     https://discuss.pytorch.org/t/opinion-eval-should-be-a-context-manager/18998/3
-    '''
+    """
     istrain = net.training
     try:
         net.eval()
@@ -27,13 +27,11 @@ def evaluating(net):
             net.train()
 
 
-def pdg_to_onehot_in_full_cond(config, cond):
+def get_pdg_col_number(config):
     cond_features = config["model"]["cond_features"]
     if "incident_pdg" not in cond_features:
-        return cond
-    cond_columns = [
-        config["data"][f"{name}_key"] for name in cond_features
-    ]
+        return None
+    cond_columns = [config["data"][f"{name}_key"] for name in cond_features]
     col_lengths = read_write.get_per_event_length(config, cond_columns)
     col_lengths = [col_lengths[name] for name in cond_columns]
     pdg_pos = 0
@@ -41,6 +39,14 @@ def pdg_to_onehot_in_full_cond(config, cond):
         if name == "incident_pdg":
             break
         pdg_pos += length
+    return pdg_pos
+
+
+def pdg_to_onehot_in_full_cond(config, cond):
+    cond_features = config["model"]["cond_features"]
+    if "incident_pdg" not in cond_features:
+        return cond
+    pdg_pos = get_pdg_col_number(config)
     incident_pdg = cond[:, pdg_pos]
     pdg_onehot_order = np.array(config["simulate_pdgs"])
     onehot = pdgs_to_onehot(pdg_onehot_order, incident_pdg)
