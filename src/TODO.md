@@ -1,13 +1,13 @@
 # ASAP
-- need to get the student model (distilled) training
+- need to get the student model (distilled) training (no point til you have a good one)
     * train
     * get summary stats from it
     * plot summary stats
-- Split stats by particle type
-- Consider writing a padded allshowers dataset that covers all particle types
 - Wire in PointCountFM see Jemma's version
 - need to write an MoE variant
+    * consider starting with pointcountFM
 - need to write a specialist variant.
+    * consider starting with pointcountFM
 
 # at some point in the future
 - Update the unit tests to meet the changes
