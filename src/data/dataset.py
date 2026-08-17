@@ -7,6 +7,14 @@ from ..detector_map import floors_ceilings
 from .read_write import get_files, events_to_local
 
 
+def pdgs_to_onehot(pdg_onehot_order, pdgs):
+    pdgs = np.asarray(pdgs)
+    # (n_pdgs, n_classes) boolean match table
+    matches = pdgs[:, np.newaxis] == pdg_onehot_order[np.newaxis, :]
+    onehot = matches.astype(int)
+    return onehot
+
+
 class AbstractBase(Dataset):
     @classmethod
     def get_n_points(cls, data, axis=-1):
@@ -59,13 +67,6 @@ class AbstractBase(Dataset):
                 floor, ceiling, mask.sum()
             )
             done[mask] = True
-
-    def pdgs_to_onehot(self, pdgs):
-        pdgs = np.asarray(pdgs)
-        # (n_pdgs, n_classes) boolean match table
-        matches = pdgs[:, np.newaxis] == self.pdg_onehot_order[np.newaxis, :]
-        onehot = matches.astype(int)
-        return onehot
 
     def __len__(self):
         return self._len
@@ -253,7 +254,7 @@ class PointCloudDataset(AbstractBase):
                 data = self._event_processing(data)
 
             if name_in_batch == "incident_pdg":
-                data = self.pdgs_to_onehot(data)
+                data = pdgs_to_onehot(self.pdg_onehot_order, data)
 
             if len(data.shape) == 1:
                 data = data[..., np.newaxis]
@@ -401,7 +402,7 @@ class ShowerDataDataset(AbstractBase):
                 data = self._event_processing(data)
 
             if name_in_batch == "incident_pdg":
-                data = self.pdgs_to_onehot(data)
+                data = pdgs_to_onehot(self.pdg_onehot_order, data)
 
             if len(data.shape) > 2:
                 data = data.squeeze()

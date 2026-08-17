@@ -7,6 +7,7 @@ from functools import lru_cache
 from contextlib import contextmanager
 from ..diffusion import Diffusion
 from ..data import transforms, read_write
+from ..data.dataset import pdgs_to_onehot
 from ..detector_map import create_map, find_layers, get_layer_centers
 
 
@@ -24,6 +25,29 @@ def evaluating(net):
     finally:
         if istrain:
             net.train()
+
+
+def pdg_to_onehot_in_full_cond(config, cond):
+    cond_features = config["model"]["cond_features"]
+    if "incident_pdg" not in cond_features:
+        return cond
+    cond_columns = [
+        config["data"][f"{name}_key"] for name in config["model"]["cond_features"]
+    ]
+    col_lengths = read_write.get_per_event_length(config, cond_columns)
+    col_lengths = [col_lengths[name] for name in cond_columns]
+    pdg_pos = 0
+    for name, length in zip(cond_columns, col_lengths):
+        if name == "incident_pdg":
+            break
+        pdg_pos += length
+    incident_pdg = cond[:, pdg_pos : pdg_pos + 1]
+    pdg_onehot_order = np.array(config["simulate_pdgs"])
+    onehot = pdgs_to_onehot(pdg_onehot_order, incident_pdg)
+    cond_before_pdg = cond[:, :pdg_pos]
+    cond_after_pdg = cond[:, pdg_pos + 1 :]
+    cond = np.concatenate([cond_before_pdg, onehot, cond_after_pdg], axis=1)
+    return cond
 
 
 class Sampler:
@@ -107,6 +131,7 @@ class Sampler:
             cond = per_event
         if not return_target:
             target = None
+        cond = pdg_to_onehot_in_full_cond(self.config, cond)
         return cond, points, target
 
     def sample_from_dataset(

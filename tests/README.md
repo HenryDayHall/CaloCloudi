@@ -6,7 +6,7 @@ However, they test it without real oversight, so if you feel it's appropriate to
 the scripts in the scripts folder are the ultimate test for consequences.
 
 ```bash
-pip install pytest pytest-mock showerdata
+pip install pytest pytest-mock showerdata k-diffusion
 pytest                      # from the repo root
 pytest tests/test_read_write.py -k orientation
 pytest tests/test_dataset.py -k ShowerData
@@ -21,8 +21,12 @@ All three data formats: `padded`, `padded_unordered` and `showerdata`.
 written with the `showerdata` package (it is on PyPI); when the package is not
 installed it is stubbed in `conftest.py` so the rest of the suite still runs,
 and the ShowerData tests skip themselves. `test_diffusion.py` skips itself if
-`k_diffusion` is missing, because `src/diffusion.py` subclasses out of it and
-cannot be stubbed.
+`k_diffusion` is missing (it is on PyPI as `k-diffusion`), because
+`src/diffusion.py` imports it at module level and builds its Fourier time
+embedding and samplers out of it, so it cannot be stubbed. Its networks are
+shrunk through the `diffusion_pointwise_hidden_l*` config keys, so the whole
+file runs on the CPU in seconds, and its stochastic paths are pinned by
+seeding and replaying `torch.manual_seed` rather than statistically.
 
 `conftest.py` writes real HDF5 files with the `config/default.yaml` key names
 (`events`, `energy`, `n_points`, `p_norm_local`, plus a `pdg` column) and
@@ -54,6 +58,13 @@ that looks unintended. Worth a look before changing the code:
 
 | Where | What |
 | --- | --- |
+| `mean_flat` | An empty `dim` list means every dim to torch, so a 1-D tensor collapses to a scalar instead of passing through. |
+| `Diffusion.__init__` | The distillation branch never reads `training.diffusion_loss`; a distilled `Denoiser` is always l2, whatever the config says. |
+| `Diffusion.get_loss` | The docstring promises `(loss, loss_prior)`; only a single scalar tensor ever comes back. |
+| `Diffusion.sample` | The accepted sampler names are inconsistently prefixed: "euler", "heun", "dpmpp_2m" and "dpmpp_2s_ancestral" are bare, while "sample_euler_ancestral", "sample_lms" and "sample_dpmpp_2m_sde" keep the `sample_` prefix -- the bare forms of the latter three are NotImplemented. |
+| `Denoiser.__init__` | The `device` argument is accepted and ignored; the `sigma_data` buffer is created on the CPU regardless. |
+| `Denoiser.loss` | The mask is per point, `(B, N)`, not input-shaped as the docstring says. An event whose mask is entirely False crashes in `torch.randint` rather than being skipped or zeroed. |
+| `PointwiseNet_kDiffusion` | The time conditioning is `sigma.log() / 4`, so a sigma of exactly zero silently produces non-finite output instead of raising. |
 | `choose_idxs` | The last event is unreachable once the dataset is longer than `2 * bs`, so one event never appears in an epoch. `PointCloudDatasetUnordered` does not have this problem. |
 | `choose_idxs` | An odd `batch_size` gives `bs - 1` events in every middle batch and `bs` at the ends, so the batch size is not constant across an epoch. |
 | `_make_index_list` | `n_points` shaped `(n_events, 1)` breaks the ragged `np.array(...)` call. Marked `xfail`. |

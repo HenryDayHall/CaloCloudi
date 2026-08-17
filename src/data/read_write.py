@@ -70,8 +70,35 @@ def get_files(dataset_path, file_range_start, file_range_end):
     return files[file_range_start:file_range_end]
 
 
+def get_event_idxs(
+    dataset_path,
+    file_range_start,
+    file_range_end,
+    dataset_format,
+    pdg_key,
+    pdgs_to_include,
+):
+    if isinstance(pdgs_to_include, list):
+        pdgs_to_include = tuple(pdgs_to_include)
+    return _get_event_idxs(
+        dataset_path,
+        file_range_start,
+        file_range_end,
+        dataset_format,
+        pdg_key,
+        pdgs_to_include,
+    )
+
+
 @lru_cache(maxsize=1)
-def get_n_events(dataset_path, file_range_start, file_range_end, dataset_format, points_key):
+def _get_event_idxs(
+    dataset_path,
+    file_range_start,
+    file_range_end,
+    dataset_format,
+    pdg_key,
+    pdgs_to_include,
+):
     """
     Get the number of events in the dataset
 
@@ -91,31 +118,49 @@ def get_n_events(dataset_path, file_range_start, file_range_end, dataset_format,
 
     """
     n_events = []
+    idxs = []
     for file_name in get_files(dataset_path, file_range_start, file_range_end):
         if dataset_format == "showerdata":
             loaded = showerdata.ShowerDataFile(file_name)
-            n_events.append(len(loaded))
+            pdgs = getattr(loaded[:], pdg_key)
         else:
             with h5py.File(file_name, "r") as on_disk:
-                events_array_shape = on_disk[points_key].shape
-                if np.sum(events_array_shape):
-                    n_events.append(on_disk[points_key].shape[-3])
-    if len(n_events) < 2:
-        n_events = np.sum(n_events)
-    return n_events
+                pdgs = on_disk[pdg_key]
+        idxs.append(np.where(np.isin(pdgs, pdgs_to_include))[0])
+        n_events.append(len(idxs[-1]))
+    return n_events, idxs
 
 
-def n_events_in_part(config, part):
+def event_idxs_in_part(config, part):
     file_range_start = config["data"][f"{part}_range_start"]
     file_range_end = config["data"][f"{part}_range_end"]
-    n_events = get_n_events(
+    pdgs_to_include = config["simulate_pdgs"]
+    n_events, idxs = get_event_idxs(
         config["data"]["dataset_path"],
         file_range_start,
         file_range_end,
         config["data"]["format"],
-        config["data"]["points_key"],
+        config["data"]["incident_pdg_key"],
+        pdgs_to_include,
     )
-    return n_events
+    return n_events, idxs
+
+
+def get_per_event_length(config, per_event_cols):
+    lengths = {}
+    for col in per_event_cols:
+        per_event, _ = read_raw_regaxes(
+            config,
+            part="train",
+            pick_events=[0],
+            total_size=None,
+            per_event_cols=[col],
+        )
+        if len(per_event.shape) == 1:
+            lengths[col] = 1
+        else:
+            lengths[col] = per_event.shape[1]
+    return lengths
 
 
 def events_to_local(events, orientation):
@@ -290,12 +335,13 @@ def read_raw_regaxes(
         per_event_cols = ["energy"]
     file_range_start = config["data"][f"{part}_range_start"]
     file_range_end = config["data"][f"{part}_range_end"]
-    n_events = get_n_events(
+    n_events, event_idxs = get_event_idxs(
         config["data"]["dataset_path"],
         file_range_start,
         file_range_end,
         config["data"]["format"],
-        config["data"]["points_key"],
+        config["data"]["incident_pdg_key"],
+        config["simulate_pdgs"],
     )
     n_total_events = np.sum(n_events)
     total_size = min(100 if total_size is None else total_size, n_total_events)
@@ -321,17 +367,15 @@ def read_raw_regaxes(
         config["data"]["dataset_path"], file_range_start, file_range_end
     )
     file_indices = []
-    if len(file_names) == 1:
-        file_indices.append(pick_events)
-    else:
-        file_start = 0
-        for i, file_name in enumerate(file_names):
-            file_end = file_start + n_events[i]
-            file_indices.append(
-                pick_events[(pick_events >= file_start) & (pick_events < file_end)]
-                - file_start
-            )
-            file_start = file_end
+    file_start = 0
+    for i, file_name in enumerate(file_names):
+        file_end = file_start + n_events[i]
+        pick_here = (
+            pick_events[(pick_events >= file_start) & (pick_events < file_end)]
+            - file_start
+        )
+        file_indices.append(event_idxs[i][pick_here])
+        file_start = file_end
 
     if config["data"]["format"] == "showerdata":
         per_event, events = _read_showerdata(

@@ -13,3 +13,4 @@
 
 # at some point in the future
 - write a lot of unit tests (maybe claude can do that)
+- Go through the unintended features that claude's unit tests turned up and fix or document
