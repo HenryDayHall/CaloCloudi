@@ -1,7 +1,7 @@
 device: "cuda"
 sampler: "heun"
 num_steps: 20
-output_path: "/home/baggjemm/CaloCloudi/data"
+output_path: "/data/dust/user/dayhallh/data/CaloClouds_diffusion"
 simulate_pdgs: [-11, 11, 22]
 
 preprocessing:

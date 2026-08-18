@@ -68,9 +68,9 @@ class Sampler:
             self.model = Diffusion(config, distillation=distilled)
             device = config["device"]
             self.model.load_state_dict(torch.load(model, map_location=device))
-            #result = self.model.load_state_dict(torch.load(model, map_location=device), strict=False)
-            #print("Missing keys:", result.missing_keys)
-            #print("Unexpected keys:", result.unexpected_keys)
+            # result = self.model.load_state_dict(torch.load(model, map_location=device), strict=False)
+            # print("Missing keys:", result.missing_keys)
+            # print("Unexpected keys:", result.unexpected_keys)
         else:
             self.model = model
         if model is not None:
@@ -169,13 +169,21 @@ class Sampler:
         return sampler
 
 
-def points_per_layer_from_target(data_target, config):
+def points_per_layer_from_target(data_target, config, return_energy=False):
     point_layers = find_layers(config, data_target)
     real_points = data_target[:, :, 3] > 0
     n_layers = len(config["data"]["layer_bottom_pos"])
     points_per_layer = np.zeros((data_target.shape[0], n_layers), dtype=int)
+    if return_energy:
+        energy_per_layer = np.zeros((data_target.shape[0], n_layers), dtype=float)
     for i in range(n_layers):
         points_per_layer[:, i] = np.sum((point_layers == i) & real_points, axis=1)
+        if return_energy:
+            energy_per_layer[:, i] = np.sum(
+                data_target[:, :, 3] * (point_layers == i), axis=1
+            )
+    if return_energy:
+        return points_per_layer, energy_per_layer
     return points_per_layer
 
 
