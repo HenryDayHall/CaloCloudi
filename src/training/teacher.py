@@ -105,7 +105,7 @@ def common(config):
 
 
 def init_from_scratch(config_path):
-    logger = utils.Logger(config_path)
+    logger = utils.Logger(config_path, run_type="teacher")
     config = logger.config
     setup_dict, validation_checker = common(config)
     for name, function in validation_checker.callables.items():
@@ -120,7 +120,7 @@ def init_from_scratch(config_path):
 
 
 def init_from_pretrained(model_path):
-    logger = utils.Logger.from_model_path(model_path)
+    logger = utils.Logger.from_model_path(model_path, run_type="teacher")
     config = logger.config
     setup_dict, validation_checker = common(config)
 

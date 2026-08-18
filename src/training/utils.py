@@ -8,6 +8,7 @@ import k_diffusion
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LambdaLR
 from ..data.dataset import from_config as dataset_from_config
+from ..evaluation.model_kind import RUN_INFO_NAME, DISTILLED_ROLES
 
 
 class Logger:
@@ -26,6 +27,8 @@ class Logger:
         config_path,
         existing_log_dir=None,
         chatty=True,
+        run_type=None,
+        run_info=None,
     ):
         self.text = ""
         self.chatty = chatty
@@ -46,6 +49,36 @@ class Logger:
             self._load()
         self.checkpoint_dir = os.path.join(self.log_dir, "checkpoints")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
+        if run_type is not None:
+            self.write_run_info(run_type, **(run_info or {}))
+
+    def write_run_info(self, run_type, overwrite=False, **extra):
+        """Record what kind of run this is, beside the config.
+
+        A teacher checkpoint and a distilled student checkpoint are
+        indistinguishable once written -- same keys, same shapes -- so the
+        evaluation code cannot work out how to sample one without being told.
+        This is where it is told.
+
+        Existing files are left alone unless ``overwrite``, so resuming a run
+        never rewrites its own history, and resuming an older run backfills
+        the marker it never had.
+        """
+        path = os.path.join(self.log_dir, RUN_INFO_NAME)
+        if os.path.exists(path) and not overwrite:
+            return path
+        info = {
+            "run_type": run_type,
+            "distilled_roles": (
+                list(DISTILLED_ROLES) if run_type == "student" else []
+            ),
+            "written": time.strftime("%Y-%m-%d_%H-%M-%S"),
+        }
+        info.update(extra)
+        with open(path, "w") as f:
+            yaml.dump(info, f)
+        self.add_text(f"Run info written to {path}")
+        return path
 
     def add_validation_function(self, name, function):
         self.add_text(f"Adding validation function for {name}")
@@ -119,12 +152,13 @@ class Logger:
             self.text = f.read()
 
     @classmethod
-    def from_model_path(cls, model_path, validation_functions_dict=None):
+    def from_model_path(cls, model_path, validation_functions_dict=None, run_type=None):
         log_dir = os.path.dirname(os.path.dirname(model_path))
         config_path = os.path.join(log_dir, "config.yaml")
         logger = cls(
             config_path,
             existing_log_dir=log_dir,
+            run_type=run_type,
         )
         if validation_functions_dict is not None:
             for name, function in validation_functions_dict.items():
