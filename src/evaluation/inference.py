@@ -3,6 +3,7 @@ import os
 import yaml
 import numpy as np
 import collections
+import warnings
 from functools import lru_cache
 from contextlib import contextmanager
 from ..diffusion import Diffusion
@@ -158,7 +159,7 @@ class Sampler:
         config = yaml.safe_load(open(os.path.join(log_dir, "config.yaml")))
         cuda_avaliable = torch.cuda.is_available()
         if not cuda_avaliable:
-            print("CUDA not avaliable, using CPU")
+            warnings.warn("CUDA not avaliable, using CPU")
             config["device"] = "cpu"
         return config
 
