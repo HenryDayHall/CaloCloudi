@@ -4,6 +4,7 @@
 
 # CaloCloudi; CaloClouds diffusion
 
+This is currently a work in progress.
 
 # installation
 

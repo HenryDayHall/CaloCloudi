@@ -68,6 +68,9 @@ class Sampler:
             self.model = Diffusion(config, distillation=distilled)
             device = config["device"]
             self.model.load_state_dict(torch.load(model, map_location=device))
+            # result = self.model.load_state_dict(torch.load(model, map_location=device), strict=False)
+            # print("Missing keys:", result.missing_keys)
+            # print("Unexpected keys:", result.unexpected_keys)
         else:
             self.model = model
         if model is not None:
@@ -166,13 +169,21 @@ class Sampler:
         return sampler
 
 
-def points_per_layer_from_target(data_target, config):
+def points_per_layer_from_target(data_target, config, return_energy=False):
     point_layers = find_layers(config, data_target)
     real_points = data_target[:, :, 3] > 0
     n_layers = len(config["data"]["layer_bottom_pos"])
     points_per_layer = np.zeros((data_target.shape[0], n_layers), dtype=int)
+    if return_energy:
+        energy_per_layer = np.zeros((data_target.shape[0], n_layers), dtype=float)
     for i in range(n_layers):
         points_per_layer[:, i] = np.sum((point_layers == i) & real_points, axis=1)
+        if return_energy:
+            energy_per_layer[:, i] = np.sum(
+                data_target[:, :, 3] * (point_layers == i), axis=1
+            )
+    if return_energy:
+        return points_per_layer, energy_per_layer
     return points_per_layer
 
 
@@ -227,6 +238,24 @@ def sample_to_physical(points, points_per_layer, config):
     physical_points[remove_mask] = 0
 
     return physical_points, point_layer_ids
+
+
+def energy_corrections(physical_points, point_layer_ids, energy_per_layer):
+    prior_energy_per_layer = np.zeros_like(energy_per_layer)
+    for i in range(energy_per_layer.shape[1]):
+        mask = point_layer_ids == i
+        prior_energy_per_layer[:, i] = np.sum(physical_points[:, :, 3] * mask, axis=1)
+    ratio = np.divide(
+        energy_per_layer,
+        prior_energy_per_layer,
+        where=prior_energy_per_layer != 0,
+        out=np.zeros_like(energy_per_layer),
+    )
+    ratio_per_point = np.take_along_axis(
+        ratio, np.clip(point_layer_ids, 0, None), axis=1
+    )
+    physical_points[:, :, 3] *= ratio_per_point
+    return physical_points
 
 
 def unshift_points(physical_points, point_layer_ids, cond_data_coords, config):
