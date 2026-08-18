@@ -70,24 +70,9 @@ physical_points, point_layer_ids = inference.sample_to_physical(
 )
 
 # Rescaling the energy per layer to match the information the pcFM gives
-energies = physical_points[:, :, 3].copy()
-diffusion_sum = np.zeros_like(energy_per_layer)
-
-for layer in range(energy_per_layer.shape[1]):
-    mask = point_layer_ids == layer
-    diffusion_sum[:, layer] = (energies * mask).sum(axis=1)
-
-ratio = np.divide(
-    energy_per_layer,
-    diffusion_sum,
-    out=np.zeros_like(energy_per_layer),
-    where=diffusion_sum != 0,
+physical_points = inference.energy_corrections(
+    physical_points, point_layer_ids, energy_per_layer
 )
-scale_per_point = np.take_along_axis(ratio, np.clip(point_layer_ids, 0, None), axis=1)
-scale_per_point[point_layer_ids < 0] = 1.0
-
-physical_points[:, :, 3] = energies * scale_per_point
-
 
 print("Unshifting points")
 physical_points = inference.unshift_points(

@@ -487,12 +487,16 @@ class SingularsMixin:
         n_pdgs_simulated = len(pdg_list)
         if n_pdgs_simulated > 1:
             pdg_col_num = inference.get_pdg_col_number(self.config)
-            pdg_onehot = cond[:, pdg_col_num : pdg_col_num + n_pdgs_simulated].astype(
-                int
-            ).astype(bool)
+            pdg_onehot = (
+                cond[:, pdg_col_num : pdg_col_num + n_pdgs_simulated]
+                .astype(int)
+                .astype(bool)
+            )
             for pdg_n, pdg in enumerate(pdg_list):
                 pdg_mask = pdg_onehot[:, pdg_n]
-                pdg_singulars = self._calculate_singulars(cond[pdg_mask], cells[pdg_mask])
+                pdg_singulars = self._calculate_singulars(
+                    cond[pdg_mask], cells[pdg_mask]
+                )
                 for k, v in pdg_singulars.items():
                     key = f"pdg_{pdg}_{k}"
                     singulars[key] = v
@@ -529,22 +533,32 @@ class ModelSummary(SingularsMixin):
         config,
         model=None,
         sample_cells=None,
-        cond=None,  # add conditioning for when we need pcfm data
+        cond=None,
+        points_per_layer=None,
+        energy_per_layer=None,
         data_part="test",
         pick_events=None,
         total_size=1_000,
         printer=print,
         output_path=None,
+        rescale_energy=False,
     ):
         self.config = config
         self.data_part = data_part
         self.pick_events = pick_events
         self.total_size = total_size
         self.printer = printer
-        # generate these later as needed
-        self._cond = cond  # pcfm cond if given, otherwise none
-        self._points = None
-        self._points_per_layer = None
+        self.rescale_energy = rescale_energy
+        # generate these later as needed, or they can be given as arguments to use pcfm
+        self._cond = cond
+        if self._cond is not None:
+            self.external_cond = True
+        self._points_per_layer = points_per_layer
+        if self._points_per_layer is None:
+            self._points = None
+        else:
+            self._points = np.sum(self._points_per_layer, axis=1)
+        self._energy_per_layer = energy_per_layer
         if model is not None:
             assert sample_cells is None
             self.singulars = self.add_model(model, output_path=output_path)
@@ -561,9 +575,17 @@ class ModelSummary(SingularsMixin):
             self.data_part, self.pick_events, self.total_size, return_target=True
         )
         self.printer("Getting points per layer from reference")
-        self._points_per_layer = inference.points_per_layer_from_target(
-            target, self.config
-        )
+        if self.rescale_energy:
+            (
+                self._points_per_layer,
+                self._energy_per_layer,
+            ) = inference.points_per_layer_from_target(
+                target, self.config, return_energy=True
+            )
+        else:
+            self._points_per_layer = inference.points_per_layer_from_target(
+                target, self.config
+            )
         del target
         self.printer(f"Max points per layer: {np.max(self._points_per_layer)}")
 
@@ -585,30 +607,49 @@ class ModelSummary(SingularsMixin):
             self._make_sampling_kit()
         return self._points_per_layer
 
+    @property
+    def energy_per_layer(self):
+        assert self.rescale_energy, "Energy not rescaled"
+        if self._energy_per_layer is None:
+            self._make_sampling_kit()
+        return self._energy_per_layer
+
     @classmethod
     def from_model_path(
         cls,
         model_path,
+        cond=None,
+        points_per_layer=None,
+        energy_per_layer=None,
         data_part="test",
         pick_events=None,
         total_size=1_000,
         printer=print,
         save_summary=True,
+        rescale_energy=False,
     ):
         printer(f"Loading model from {model_path}")
         output_path = None
         if save_summary:
-            output_path = cls.get_output_path_from_model_path(model_path)
+            output_path = cls.get_output_path_from_model_path(
+                model_path,
+                external_cond=(cond is not None),
+                rescale_energy=rescale_energy,
+            )
             printer(f"Saving summary to {output_path}")
         config = inference.Sampler.get_config_from_model_path(model_path)
         this = cls(
             config,
             model_path,
+            cond=cond,
+            points_per_layer=points_per_layer,
+            energy_per_layer=energy_per_layer,
             data_part=data_part,
             pick_events=pick_events,
             total_size=total_size,
             printer=printer,
             output_path=output_path,
+            rescale_energy=rescale_energy,
         )
         return this
 
@@ -629,6 +670,10 @@ class ModelSummary(SingularsMixin):
                 sample, self.points_per_layer[start:end], self.config
             )
             del sample
+            if self.rescale_energy:
+                physical_points = inference.energy_corrections(
+                    physical_points, point_layer_ids, self.energy_per_layer[start:end]
+                )
             physical_points = inference.unshift_points(
                 physical_points, point_layer_ids, self.cond[start:end], self.config
             )
@@ -656,8 +701,13 @@ class ModelSummary(SingularsMixin):
         return sample_singulars
 
     @staticmethod
-    def get_output_path_from_model_path(model_path):
-        output_path = ".".join(model_path.split(".")[:-1]) + "_summary.npz"
+    def get_output_path_from_model_path(model_path, external_cond, rescale_energy):
+        output_path = ".".join(model_path.split(".")[:-1])
+        if external_cond:
+            output_path += "_external_cond"
+        if rescale_energy:
+            output_path += "_rescaled_energy"
+        output_path += "_summary.npz"
         return output_path
 
 
@@ -717,21 +767,32 @@ class ReferenceSummary(ReferenceBase, SingularsMixin):
         return this
 
 
-def complete_model(model_path, n_events):
-    output_path = ModelSummary.get_output_path_from_model_path(model_path)
+def complete_model(model_path, n_events, **model_summary_kwargs):
+    external_cond = "cond" in model_summary_kwargs
+    rescale_energy = model_summary_kwargs.get("rescale_energy", False)
+    output_path = ModelSummary.get_output_path_from_model_path(
+        model_path, external_cond, rescale_energy
+    )
     if not os.path.exists(output_path):
         print(f"Summarising to {output_path}")
-        ModelSummary.from_model_path(model_path, data_part="test", total_size=n_events)
+        ModelSummary.from_model_path(
+            model_path, data_part="test", total_size=n_events, **model_summary_kwargs
+        )
     else:
         print(f"Already summarised to {output_path}")
     ema_model_path = model_path.replace("_model.pt", "_ema_model.pt")
     if os.path.exists(ema_model_path):
         print("EMA model exists")
-        output_path = ModelSummary.get_output_path_from_model_path(ema_model_path)
+        output_path = ModelSummary.get_output_path_from_model_path(
+            ema_model_path, external_cond, rescale_energy
+        )
         if not os.path.exists(output_path):
             print(f"Summarising to {output_path}")
             ModelSummary.from_model_path(
-                ema_model_path, data_part="test", total_size=n_events
+                ema_model_path,
+                data_part="test",
+                total_size=n_events,
+                **model_summary_kwargs,
             )
         else:
             print(f"Already summarised to {output_path}")
@@ -739,4 +800,3 @@ def complete_model(model_path, n_events):
         print("EMA model does not exist")
     ReferenceSummary.from_model_path(model_path, data_part="test", total_size=n_events)
     print("Done summaries")
-

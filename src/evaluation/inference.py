@@ -240,6 +240,24 @@ def sample_to_physical(points, points_per_layer, config):
     return physical_points, point_layer_ids
 
 
+def energy_corrections(physical_points, point_layer_ids, energy_per_layer):
+    prior_energy_per_layer = np.zeros_like(energy_per_layer)
+    for i in range(energy_per_layer.shape[1]):
+        mask = point_layer_ids == i
+        prior_energy_per_layer[:, i] = np.sum(physical_points[:, :, 3] * mask, axis=1)
+    ratio = np.divide(
+        energy_per_layer,
+        prior_energy_per_layer,
+        where=prior_energy_per_layer != 0,
+        out=np.zeros_like(energy_per_layer),
+    )
+    ratio_per_point = np.take_along_axis(
+        ratio, np.clip(point_layer_ids, 0, None), axis=1
+    )
+    physical_points[:, :, 3] *= ratio_per_point
+    return physical_points
+
+
 def unshift_points(physical_points, point_layer_ids, cond_data_coords, config):
     # defensive programming
     n_events = physical_points.shape[0]
