@@ -520,12 +520,16 @@ class SingularsMixin:
         return singulars
 
 
+# TODO
+# Can we not call with custom cond without adding it as a input?
+# can take sample cells as input
 class ModelSummary(SingularsMixin):
     def __init__(
         self,
         config,
         model=None,
         sample_cells=None,
+        cond=None,  # add conditioning for when we need pcfm data
         data_part="test",
         pick_events=None,
         total_size=1_000,
@@ -538,7 +542,7 @@ class ModelSummary(SingularsMixin):
         self.total_size = total_size
         self.printer = printer
         # generate these later as needed
-        self._cond = None
+        self._cond = cond  # pcfm cond if given, otherwise none
         self._points = None
         self._points_per_layer = None
         if model is not None:

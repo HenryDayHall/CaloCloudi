@@ -68,6 +68,9 @@ class Sampler:
             self.model = Diffusion(config, distillation=distilled)
             device = config["device"]
             self.model.load_state_dict(torch.load(model, map_location=device))
+            #result = self.model.load_state_dict(torch.load(model, map_location=device), strict=False)
+            #print("Missing keys:", result.missing_keys)
+            #print("Unexpected keys:", result.unexpected_keys)
         else:
             self.model = model
         if model is not None:
