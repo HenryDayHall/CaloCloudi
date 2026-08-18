@@ -5,6 +5,7 @@ import numpy as np
 import collections
 from functools import lru_cache
 from contextlib import contextmanager
+from . import model_kind
 from ..diffusion import Diffusion
 from ..data import transforms, read_write
 from ..data.dataset import pdgs_to_onehot
@@ -61,10 +62,26 @@ class Sampler:
     Note that when a model is given to the sampler it will be placed in eval mode
     """
 
-    def __init__(self, config, model=None, distilled=False):
+    def __init__(self, config, model=None, distilled=None):
+        """
+        Parameters
+        ----------
+        config : dict
+            Full configuration dictionary.
+        model : str or Diffusion or None, optional
+            A checkpoint path, an already built model, or nothing.
+        distilled : bool or None, optional
+            Whether to build the network as a consistency model.  ``None``,
+            the default, works it out from the run that wrote the checkpoint.
+            A teacher and a student state dict are interchangeable, so getting
+            this wrong is silent: pass it explicitly only when the checkpoint
+            has been moved away from its log directory.
+        """
         self.config = config
         self.datatype = getattr(torch, config["training"]["dtype"])
         if isinstance(model, str):
+            if distilled is None:
+                distilled = model_kind.is_distilled(model)
             self.model = Diffusion(config, distillation=distilled)
             device = config["device"]
             self.model.load_state_dict(torch.load(model, map_location=device))
@@ -73,6 +90,11 @@ class Sampler:
             # print("Unexpected keys:", result.unexpected_keys)
         else:
             self.model = model
+            # an already built model carries its own flag
+            self.distilled = bool(
+                getattr(model, "distillation", distilled) if model is not None
+                else distilled
+            )
         if model is not None:
             self.model.to(config["device"], dtype=self.datatype)
         self.preprocess_conditioning = transforms.preprocessing(config, "conditioning")
@@ -163,10 +185,15 @@ class Sampler:
         return config
 
     @classmethod
-    def from_model_path(cls, model_path):
+    def from_model_path(cls, model_path, distilled=None):
         config = cls.get_config_from_model_path(model_path)
-        sampler = cls(config, model_path)
+        sampler = cls(config, model_path, distilled=distilled)
         return sampler
+
+    @property
+    def num_sampling_steps(self):
+        """Steps ``sample`` will take. A consistency model always takes one."""
+        return 1 if self.distilled else self.config["num_steps"]
 
 
 def points_per_layer_from_target(data_target, config, return_energy=False):
