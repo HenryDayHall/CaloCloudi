@@ -31,6 +31,7 @@ class Logger:
         self.chatty = chatty
 
         self.add_text(f"Loading config from {config_path}")
+        self.config_path = config_path
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
         self.values = {name: [] for name in self.per_step_log}
@@ -78,6 +79,10 @@ class Logger:
 
     def do_validation(self, model):
         self.validation_values["n_events"].append(self.values["n_events"][-1])
+        if self.chatty:
+            # Don't actually log this, just print
+            print(f"Have conf path {self.config_path} and "
+                  f"dataset path {self.config['data']['dataset_path']}")
         for name, function in self.validation_functions_dict.items():
             self.add_text(f"Running validation for {name}")
             self.validation_values[name].append(function(model))

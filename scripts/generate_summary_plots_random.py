@@ -40,8 +40,8 @@ while True:
         break
     reverse_date_order = np.argsort(date_stamp)
     # random_order = np.random.permutation(len(to_do))
-    model_path = to_do.pop(reverse_date_order[0])
-    model_date = date_stamp.pop(reverse_date_order[0])
+    model_path = to_do.pop(reverse_date_order[-1])
+    model_date = date_stamp.pop(reverse_date_order[-1])
     print(f"Processing {model_path}")
     summarise.complete_model(model_path, n_events)
     example_events.plot_and_save(model_path, [100])
