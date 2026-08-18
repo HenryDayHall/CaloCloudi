@@ -22,6 +22,9 @@ def search():
     optimiser_glob = os.path.join(log_dir, "*/checkpoints/*_optimiser.pt")
     optimiser_locations = glob.glob(optimiser_glob)
     for opt in optimiser_locations:
+        folder = os.path.dirname(os.path.dirname(opt))
+        if os.path.exists(os.path.join(folder, "no_summaries")):
+            continue
         model_location = opt[: -len("_optimiser.pt")] + "_model.pt"
         summary_location = model_location[:-3] + "_summary.npz"
         if os.path.exists(model_location) and not os.path.exists(summary_location):

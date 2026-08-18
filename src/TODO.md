@@ -1,9 +1,10 @@
 # ASAP
 - need to get the student model (distilled) training (no point til you have a good one)
-    * train
-    * get summary stats from it
+    * train - started
+    * generate summaries is failing on the checkpoints, take a closer look
+    * get summary stats from it 
     * plot summary stats
-- Wire in PointCountFM see Jemma's version
+- Wire in PointCountFM see Jemma's version, done, need to test
 - need to write an MoE variant
     * consider starting with pointcountFM
 - need to write a specialist variant.
