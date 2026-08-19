@@ -287,12 +287,13 @@ def cell_energies(cells, bins=None):
     bin_edges : np.ndarray
         Array of shape ``[n_bins + 1]`` with the energy bin edges.
     """
-    if bins is None:
-        bins = np.logspace(np.log10(10 ** (-6)), np.log10(100), 100)
     mask = _cell_mask(cells)
     energies = cells[:, :, 3]
     n_events = cells.shape[0]
-    bin_edges = np.histogram_bin_edges(energies[mask], bins=bins)
+    if bins is None:
+        bin_edges = np.logspace(np.log10(10 ** (-6)), np.log10(100), 100)
+    else:
+        bin_edges = np.histogram_bin_edges(energies[mask], bins=bins)
     counts = np.empty((n_events, len(bin_edges) - 1))
     for event_n in range(n_events):
         counts[event_n], _ = np.histogram(
@@ -321,13 +322,14 @@ def radial_energy(cells, directions, bins=None):
     bin_edges : np.ndarray
         Array of shape ``[n_events, n_bins + 1]`` with the radial bin edges.
     """
-    if bins is None:
-        bins = np.arange(0, 250, 5)
     mask = _cell_mask(cells)
     distances = _radial_distances(cells, directions)
     energies = cells[:, :, 3]
     n_events = cells.shape[0]
-    bin_edges = np.histogram_bin_edges(distances[mask], bins=bins)
+    if bins is None:
+        bin_edges = np.arange(0, 250, 5)
+    else:
+        bin_edges = np.histogram_bin_edges(distances[mask], bins=bins)
     counts = np.empty((n_events, len(bin_edges) - 1))
     for event_n in range(n_events):
         event_mask = mask[event_n]
@@ -409,12 +411,13 @@ def radial_occupancies(cells, directions, bins=None):
     bin_edges : np.ndarray
         Array of shape ``[n_bins + 1]`` with the radial bin edges.
     """
-    if bins is None:
-        bins = np.arange(0, 250, 5)
     mask = _cell_mask(cells)
     distances = _radial_distances(cells, directions)
     n_events = cells.shape[0]
-    bin_edges = np.histogram_bin_edges(distances[mask], bins=bins)
+    if bins is None:
+        bin_edges = np.arange(0, 250, 5)
+    else:
+        bin_edges = np.histogram_bin_edges(distances[mask], bins=bins)
     counts = np.empty((n_events, len(bin_edges) - 1))
     for event_n in range(n_events):
         counts[event_n], _ = np.histogram(
