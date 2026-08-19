@@ -1,4 +1,5 @@
 # ASAP
+- Make the pcfm for multiple particles
 - need to write an MoE variant
     * consider starting with pointcountFM
 - need to write a specialist variant.

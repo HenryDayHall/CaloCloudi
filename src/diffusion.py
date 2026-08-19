@@ -502,3 +502,128 @@ class PointwiseNet_kDiffusion(Module):
                 out = self.act(out)
 
         return out
+
+
+# this is where we want to try MoE
+class PointwiseNet_kDiffusion_v2(Module):
+    """
+    We can have 1 generalist (the old model)
+    Any number of experts who combine their output all at once.
+    Any number of specalists, only one of whom is active at once.
+    If more than once network was active, we also have a pooling network at the end.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        context_dim = config["model"]["cond_dim"]
+        point_dim = config["model"]["feature_dim"]
+        time_dim = 64
+        fourier_scale = (
+            16  # 1 in k-diffusion, 16 in EDM, 30 in Score-based generative modeling
+        )
+
+        # TODO wip
+        n_outputs = 0
+        if config["model"]["use_generalist"]:
+            n_outputs += 1
+        if config["model"]["use_experts"]:
+            if isinstance(config["model"]["use_experts"], int):
+                n_experts = config["model"]["use_experts"]
+            elif (
+                isinstance(config["model"]["use_experts"], str)
+                and config["model"]["use_experts"] == "incident_pdg"
+            ):
+                n_experts = len(config["simulate_pdgs"])
+            else:
+                raise NotImplementedError(
+                    f"unknown value for config['model']['use_experts']: "
+                    f"{config['model']['use_experts']}"
+                )
+            n_outputs += n_experts
+        if config["model"]["use_specalists"]:
+            n_outputs += 1
+            if (
+                isinstance(config["model"]["use_specalists"], str)
+                and config["model"]["use_specalists"] == "incident_pdg"
+            ):
+                n_specalists = len(config["simulate_pdgs"])
+            else:
+                raise NotImplementedError(
+                    f"unknown value for config['model']['use_specalists']: "
+                    f"{config['model']['use_specalists']}"
+                )
+
+        if n_outputs == 0:
+            raise ValueError(
+                "At least one of use_generalist, use_experts, "
+                "or use_specalists must be True"
+            )
+        self.use_pooling = n_outputs > 1
+
+        self.act = functional.leaky_relu
+        default_hidden_dims = [128, 256, 512, 256, 128]
+        hidden_dims = config["model"].get(
+            "diffusion_generalist_hidden_dims", default_hidden_dims
+        )
+        all_dims = [point_dim] + hidden_dims + [point_dim]
+        all_context = context_dim + time_dim
+        layers = []
+        for dim_in, dim_out in zip(all_dims[:-1], all_dims[1:]):
+            layers.append(ConcatSquashLinear(dim_in, dim_out, all_context))
+        self.layers = ModuleList(layers)
+
+        self.timestep_embed = torch.nn.Sequential(
+            k_diffusion.layers.FourierFeatures(1, time_dim, std=fourier_scale),
+            # 1D Fourier features --> with register_buffer, so weights are not trained
+            torch.nn.Linear(time_dim, time_dim),  # this is a trainable layer
+        )
+
+    def _setup_generalist(self, config, point_dim, context_dim, time_dim):
+        default_hidden_dims = [128, 256, 512, 256, 128]
+        hidden_dims = config["model"].get(
+            "diffusion_generalist_hidden_dims", default_hidden_dims
+        )
+        all_dims = [point_dim] + hidden_dims + [point_dim]
+        all_context = context_dim + time_dim
+        layers = []
+        for dim_in, dim_out in zip(all_dims[:-1], all_dims[1:]):
+            layers.append(ConcatSquashLinear(dim_in, dim_out, all_context))
+        layers = ModuleList(layers)
+        return layers
+
+    def _setup_experts():
+        pass  # TODO
+
+    def _setup_specalists():
+        pass  # TODO
+
+    def _setup_pooling():
+        pass  # TODO should just be a passthrough if we don't use it
+
+    def forward(self, x, sigma, context):
+        """
+        Args:
+            x:  Point clouds at some timestep t, (B, N, d).
+            sigma:     Time. (B, ).  --> becomes "sigma" in k-diffusion
+            context:  Shape latents. (B, functional).
+        """
+        batch_size = x.size(0)
+        sigma = sigma.view(batch_size, 1, 1)  # (B, 1, 1)
+        context = context.view(batch_size, 1, -1)  # (B, 1, functional)
+
+        # formulation from EDM paper / k-diffusion
+        c_noise = sigma.log() / 4  # (B, 1, 1)
+        time_emb = self.act(self.timestep_embed(c_noise))  # (B, 1, T)
+
+        ctx_emb = torch.cat([time_emb, context], dim=-1)  # (B, 1, functional+T)
+        # TODO: might want to add additional linear embedding net
+        # for context or only cond_feats
+
+        out = x
+        for i, layer in enumerate(self.layers):
+            out = layer(ctx=ctx_emb, x=out)
+            if i < len(self.layers) - 1:
+                out = self.act(out)
+
+        return out
+

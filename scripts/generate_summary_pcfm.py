@@ -51,6 +51,7 @@ def get_from_basic(config, pcfm_path, n_events):
             simulated_pdgs = np.array(config["simulate_pdgs"])
             index = config["model"]["cond_features"].index("incident_pdg")
             cond[index] = simulated_pdgs[cond[index]][:, None]
+            # Annoying energy scale missmatch
             energy_per_layer *= 10**(-3)
         cond = np.concatenate(cond, axis=1)
         cond = inference.pdg_to_onehot_in_full_cond(config, cond)
