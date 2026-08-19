@@ -516,6 +516,7 @@ class SingularsMixin:
         singulars["cell_energies"] = cell_energy_counts
         singulars["cell_energies_edges"] = cell_energy_edges
         radial_energy_counts, radial_energy_edges = radial_energy(cells, directions)
+        assert radial_energy_counts.shape[1] == radial_energy_edges.shape[0] - 1
         singulars["radial_energy"] = radial_energy_counts
         singulars["radial_energy_edges"] = radial_energy_edges
         singulars["layer_energies"] = layer_energies(cells, self.config)

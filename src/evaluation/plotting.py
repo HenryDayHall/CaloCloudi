@@ -13,14 +13,18 @@ nice_hex = [
 
 
 def center_arrow(ax, dx, dy, frac=0.1, **arrowprops):
-    bb = ax.get_window_extent()          # axes size in pixels
+    bb = ax.get_window_extent()  # axes size in pixels
     r = bb.width / bb.height
     ux, uy = np.array([dx, dy]) / np.hypot(dx, dy)
     tip = (0.5 + frac * ux, 0.5 + frac * uy * r)
-    ax.annotate("", xy=tip, xytext=(0.5, 0.5),
-                xycoords=ax.transAxes, textcoords=ax.transAxes,
-                arrowprops=dict(arrowstyle="-|>",
-                                color="k", **arrowprops))
+    ax.annotate(
+        "",
+        xy=tip,
+        xytext=(0.5, 0.5),
+        xycoords=ax.transAxes,
+        textcoords=ax.transAxes,
+        arrowprops=dict(arrowstyle="-|>", color="k", **arrowprops),
+    )
 
 
 def plot_line_with_devation(
@@ -79,12 +83,46 @@ def plot_hist_with_devation(
     errors_up,
     errors_down=None,
     clip_to_zero=False,
+    histtype="step",
+    band_alpha=0.2,
     **hist_kwargs,
 ):
+    """
+    Plot a histogram with a pale shaded band showing the error on the
+    bin heights.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        The axes to plot on.
+    colour : str or tuple
+        matplotlib colour to use for the histogram and the shaded band.
+    bins : array-like, 1D (n_bins + 1)
+        The bin edges.
+    counts : array-like, 1D (n_bins)
+        The bin heights.
+    errors_up : array-like, 1D (n_bins) or None
+        The upward error on each bin height.
+        If None, no band is drawn.
+    errors_down : array-like, 1D (n_bins), optional
+        The downward error on each bin height.
+        If not given, the same distance as for the upper edge is used.
+    clip_to_zero : bool, optional
+        If True, the band does not extend below 0.
+    histtype : str, optional
+        Passed to `ax.hist`; "step" for comparisons, "stepfilled" for truth.
+    band_alpha : float, optional
+        The alpha of the shaded band.
+    **hist_kwargs
+        Additional keyword arguments to pass to `ax.hist`.
+
+    """
+    bins = np.asarray(bins, dtype=float)
+    counts = np.asarray(counts, dtype=float)
     bin_centers = 0.5 * (bins[:-1] + bins[1:])
 
     reduced_args = hist_kwargs.copy()
-    for key in ["color", "histtype", "weights"]:
+    for key in ["color", "weights"]:
         if key in reduced_args:
             del reduced_args[key]
     ax.hist(
@@ -92,15 +130,20 @@ def plot_hist_with_devation(
         bins=bins,
         color=colour,
         weights=counts,
-        histtype="step",
+        histtype=histtype,
         **reduced_args,
     )
 
+    if errors_up is None and errors_down is None:
+        return
+
+    if errors_up is None:
+        errors_up = errors_down
     if errors_down is None:
         errors_down = errors_up
 
-    lower = counts - errors_down
-    upper = counts + errors_up
+    lower = counts - np.asarray(errors_down, dtype=float)
+    upper = counts + np.asarray(errors_up, dtype=float)
 
     lower = np.repeat(lower, 2)
     upper = np.repeat(upper, 2)
@@ -111,7 +154,7 @@ def plot_hist_with_devation(
 
     bin_corners = np.repeat(bins, 2)[1:-1]
 
-    ax.fill_between(bin_corners, lower, upper, color=colour, alpha=0.2)
+    ax.fill_between(bin_corners, lower, upper, color=colour, alpha=band_alpha)
 
 
 def heatmap(
@@ -352,7 +395,20 @@ class RatioPlots:
         max_cols=3,
         logx=False,
         logy=False,
+        truth_bin_errors=None,
+        truth_bin_errors_down=None,
     ):
+        """
+        Parameters
+        ----------
+        truth_bin_errors : list of array-like, optional
+            One array of bin height errors per feature, or None to omit
+            the band.  Individual entries may also be None.
+        truth_bin_errors_down : list of array-like, optional
+            Downward errors, if they are asymmetric.
+            Defaults to `truth_bin_errors`.
+
+        """
         # set up plot axes
         self.n_features = len(x_labels)
         self.n_cols = min(self.n_features, max_cols)
@@ -372,24 +428,32 @@ class RatioPlots:
             ax.set_ylabel("Counts")
 
         # store bins and truth counts
-        self.bins = binnings
-        self.truth_counts = truth_bin_heights
+        self.bins = [np.asarray(b, dtype=float) for b in binnings]
+        self.truth_counts = [np.asarray(c, dtype=float) for c in truth_bin_heights]
         self.bin_centers = [0.5 * (b[1:] + b[:-1]) for b in self.bins]
 
-        # plot truth hists
-        truth_hist_kwargs = dict(
-            label=truth_label, histtype="stepfilled", color=truth_color
+        # store truth errors, one entry (possibly None) per feature
+        self.truth_errors_up = self._prepare_errors(truth_bin_errors)
+        self.truth_errors_down = self._prepare_errors(
+            truth_bin_errors_down, default=self.truth_errors_up
         )
+
+        # plot truth hists, with a pale band if errors were given
         for i, label in enumerate(x_labels):
             row = int(i / self.n_cols)
             col = i - (row * self.n_cols)
             main_ax = self.axes[row * 2, col]
             main_ax.set_xlabel(label)
-            main_ax.hist(
-                self.bin_centers[i],
-                bins=self.bins[i],
-                weights=self.truth_counts[i],
-                **truth_hist_kwargs,
+            plot_hist_with_devation(
+                main_ax,
+                truth_color,
+                self.bins[i],
+                self.truth_counts[i],
+                self.truth_errors_up[i],
+                self.truth_errors_down[i],
+                clip_to_zero=True,
+                histtype="stepfilled",
+                label=truth_label,
             )
         self.logx = project_if_needed(logx, bool, self.n_features)
         self.logy = project_if_needed(logy, bool, self.n_features)
@@ -401,29 +465,150 @@ class RatioPlots:
             col = i - (row * self.n_cols)
             ratio_ax = self.axes[row * 2 + 1, col]
             ratio_ax.hlines(1, self.bins[i][0], self.bins[i][-1], color=truth_color)
+            # the relative error on the truth, drawn around 1
+            # self._plot_truth_ratio_band(ratio_ax, i, truth_color)
 
-    def add_comparison(self, bin_heights, label, colour):
-        model_hist_kwargs = dict(label=label, histtype="step", color=colour)
-        model_ratio_kwargs = dict(label=label, c=colour)
+    def _prepare_errors(self, errors, default=None):
+        """
+        Normalise an error argument to a list of one array (or None) per
+        feature.
+
+        """
+        if errors is None:
+            if default is None:
+                return [None] * self.n_features
+            return list(default)
+        assert (
+            len(errors) == self.n_features
+        ), f"Expected errors for {self.n_features} features, got {len(errors)}"
+        return [None if e is None else np.asarray(e, dtype=float) for e in errors]
+
+    def _plot_truth_ratio_band(self, ratio_ax, i, colour):
+        """Shade the relative error of the truth around the unit line."""
+        up = self.truth_errors_up[i]
+        down = self.truth_errors_down[i]
+        if up is None and down is None:
+            return
+        truth = self.truth_counts[i]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            # the ratio grows when the denominator shrinks, so swap up/down
+            relative_up = np.zeros_like(truth) if down is None else down / truth
+            relative_down = np.zeros_like(truth) if up is None else up / truth
+        ratio_ax.fill_between(
+            self.bin_centers[i],
+            1 - relative_down,
+            1 + relative_up,
+            color=colour,
+            alpha=0.2,
+        )
+        self._update_ratio_range(i, 1 - relative_down, 1 + relative_up)
+
+    @staticmethod
+    def _ratio_error(heights, truth, height_errors, truth_errors):
+        """
+        Propagate the errors of two histograms onto their ratio.
+
+        For r = a/b with uncorrelated errors,
+            sigma_r = sqrt((sigma_a / b)**2 + (a * sigma_b / b**2)**2)
+        which is the usual relative-error sum in quadrature, written so
+        that empty bins in `a` do not produce a division by zero.
+
+        """
+        if height_errors is None and truth_errors is None:
+            return None
+        if height_errors is None:
+            height_errors = np.zeros_like(heights)
+        if truth_errors is None:
+            truth_errors = np.zeros_like(truth)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            from_heights = height_errors / truth
+            from_truth = heights * truth_errors / truth**2
+            return np.sqrt(from_heights**2 + from_truth**2)
+
+    def _update_ratio_range(self, i, *value_arrays):
+        """Widen the recorded ratio range, ignoring nan and inf."""
+        for values in value_arrays:
+            finite = np.asarray(values, dtype=float)
+            finite = finite[np.isfinite(finite)]
+            if not len(finite):
+                continue
+            self.ratio_min_maxes[i][0] = min(self.ratio_min_maxes[i][0], finite.min())
+            self.ratio_min_maxes[i][1] = max(self.ratio_min_maxes[i][1], finite.max())
+
+    def add_comparison(
+        self, bin_heights, label, colour, bin_errors=None, bin_errors_down=None
+    ):
+        """
+        Add a histogram to compare against the truth.
+
+        Parameters
+        ----------
+        bin_heights : list of array-like
+            One array of bin heights per feature.
+        label : str
+            Legend label.
+        colour : str or tuple
+            matplotlib colour for the line and its band.
+        bin_errors : list of array-like, optional
+            One array of bin height errors per feature, or None to omit
+            the bands.  Individual entries may also be None.
+        bin_errors_down : list of array-like, optional
+            Downward errors, if they are asymmetric.
+            Defaults to `bin_errors`.
+
+        """
+        errors_up = self._prepare_errors(bin_errors)
+        errors_down = self._prepare_errors(bin_errors_down, default=errors_up)
+
         for i in range(self.n_features):
             row = int(i / self.n_cols)
             col = i - (row * self.n_cols)
+            heights = np.asarray(bin_heights[i], dtype=float)
+            truth = self.truth_counts[i]
+
             main_ax = self.axes[row * 2, col]
-            main_ax.hist(
-                self.bin_centers[i],
-                bins=self.bins[i],
-                weights=bin_heights[i],
-                **model_hist_kwargs,
+            plot_hist_with_devation(
+                main_ax,
+                colour,
+                self.bins[i],
+                heights,
+                errors_up[i],
+                errors_down[i],
+                clip_to_zero=True,
+                histtype="step",
+                label=label,
             )
-            ratio = bin_heights[i] / self.truth_counts[i]
+
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ratio = heights / truth
+
+            # the ratio grows when the numerator grows or the denominator
+            # shrinks, so the up error pairs with the truth's down error
+            ratio_up = self._ratio_error(
+                heights, truth, errors_up[i], self.truth_errors_down[i]
+            )
+            ratio_down = self._ratio_error(
+                heights, truth, errors_down[i], self.truth_errors_up[i]
+            )
+
             ratio_ax = self.axes[row * 2 + 1, col]
-            ratio_ax.plot(self.bin_centers[i], ratio, **model_ratio_kwargs)
-            self.ratio_min_maxes[i][0] = min(
-                self.ratio_min_maxes[i][0], np.nanmin(ratio)
-            )
-            self.ratio_min_maxes[i][1] = max(
-                self.ratio_min_maxes[i][1], np.nanmax(ratio)
-            )
+            if ratio_up is None:
+                ratio_ax.plot(self.bin_centers[i], ratio, label=label, c=colour)
+                self._update_ratio_range(i, ratio)
+            else:
+                plot_line_with_devation(
+                    ratio_ax,
+                    colour,
+                    self.bin_centers[i],
+                    ratio,
+                    ratio_up,
+                    ratio_down,
+                    clip_to_zero=True,
+                    label=label,
+                )
+                self._update_ratio_range(
+                    i, np.maximum(ratio - ratio_down, 0), ratio + ratio_up
+                )
 
     def finalise(self):
         self.axes[-2, -1].legend()

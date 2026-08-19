@@ -3,10 +3,39 @@ import sys
 import glob
 import yaml
 import numpy as np
-from src.evaluation import summarise, example_events
+import h5py
+from src.evaluation import summarise, example_events, inference
 from src.training.best_checkpoint import find_best_checkpoint
 
+
+def get_from_basic(config, pcfm_path, n_events):
+    with h5py.File(pcfm_path, "r") as pcfm:
+        max_events = pcfm["num_points"].shape[0]
+        print(f"Max events: {max_events}")
+        points_per_layer = pcfm["num_points"][:n_events]
+        energy_per_layer = pcfm["energy_per_layer"][:n_events]
+        # Getting the points_per_layer and energy_per_layer from the file
+        # conditioning for the same events
+        keys_on_disk = {
+            "incident_energy": "energy",
+            "incident_direction": "directions",
+            "incident_pdg": "labels",
+        }
+        cond = [
+            pcfm[keys_on_disk[k]][:n_events] for k in config["model"]["cond_features"]
+        ]
+        if "incident_pdg" in config["model"]["cond_features"]:
+            simulated_pdgs = np.array(config["simulate_pdgs"])
+            index = config["model"]["cond_features"].index("incident_pdg")
+            cond[index] = simulated_pdgs[cond[index]][:, None]
+        cond = np.concatenate(cond, axis=1)
+        cond = inference.pdg_to_onehot_in_full_cond(config, cond)
+    return cond, points_per_layer, energy_per_layer
+
+
 n_events = 1000
+
+external_cond = "/home/dayhallh/training/CC_ExpSpec/PointCountFM_private/results/20260819_154640_CaloClouds_photonsOnly/new_samples.h5"
 
 if len(sys.argv) > 1:
     log_dir = sys.argv[1]
@@ -41,10 +70,24 @@ while True:
         break
     model_path = to_do.pop()
     print(f"Processing {model_path}")
+    config = inference.Sampler.get_config_from_model_path(model_path)
+    # raw model
     summarise.complete_model(model_path, n_events)
+    # truth corrected points and energy
     summarise.complete_model(model_path, n_events, rescale_energy=True)
     example_events.plot_and_save(model_path, [100])
     folder_path = os.path.dirname(os.path.dirname(model_path))
+    # external cond
+    cond, points_per_layer, energy_per_layer = get_from_basic(
+        config, external_cond, n_events
+    )
+    model_kwargs = {
+        "cond": cond,
+        "points_per_layer": points_per_layer,
+        "energy_per_layer": energy_per_layer,
+        "rescale_energy": True,
+    }
+    summarise.complete_model(model_path, n_events, **model_kwargs)
     with open(os.path.join(folder_path, "last_best_seen.txt"), "w") as f:
         f.write(model_path)
     print("Done")
