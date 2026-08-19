@@ -28,6 +28,8 @@ def get_from_basic(config, pcfm_path, n_events):
             simulated_pdgs = np.array(config["simulate_pdgs"])
             index = config["model"]["cond_features"].index("incident_pdg")
             cond[index] = simulated_pdgs[cond[index]][:, None]
+            # Annoying energy scale missmatch
+            energy_per_layer *= 10**(-3)
         cond = np.concatenate(cond, axis=1)
         cond = inference.pdg_to_onehot_in_full_cond(config, cond)
     return cond, points_per_layer, energy_per_layer
@@ -35,6 +37,7 @@ def get_from_basic(config, pcfm_path, n_events):
 
 n_events = 1000
 
+# this is photons only....
 external_cond = "/home/dayhallh/training/CC_ExpSpec/PointCountFM_private/results/20260819_154640_CaloClouds_photonsOnly/new_samples.h5"
 
 if len(sys.argv) > 1:

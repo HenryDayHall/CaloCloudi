@@ -690,7 +690,12 @@ class ModelSummary(SingularsMixin):
                 if key not in singulars:
                     singulars[key] = []
                 singulars[key].append(new_singulars[key])
-        singulars = {k: np.concatenate(v, axis=0) for k, v in singulars.items()}
+        # TODO, works so long as everyone uses the default bins
+        # If we start messing with it, we need to calculate bins before batching
+        singulars = {
+            k: (v[0] if k.endswith("_edges") else np.concatenate(v, axis=0))
+            for k, v in singulars.items()
+        }
         if output_path is not None:
             np.savez(output_path, **singulars)
         return singulars
