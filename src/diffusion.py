@@ -23,7 +23,7 @@ class KLDloss(Module):
 
 
 def is_v2_config(config):
-    v2_keys = ["use_generalist", "use_experts", "use_specalists"]
+    v2_keys = ["use_generalist", "use_experts", "use_specialists"]
     return all(key in config["model"] for key in v2_keys)
 
 
@@ -489,17 +489,17 @@ class PointwiseNet_kDiffusion(Module):
         Args:
             x:  Point clouds at some timestep t, (B, N, d).
             sigma:     Time. (B, ).  --> becomes "sigma" in k-diffusion
-            context:  Shape latents. (B, functional).
+            context:  Shape latents. (B, F).
         """
         batch_size = x.size(0)
         sigma = sigma.view(batch_size, 1, 1)  # (B, 1, 1)
-        context = context.view(batch_size, 1, -1)  # (B, 1, functional)
+        context = context.view(batch_size, 1, -1)  # (B, 1, F)
 
         # formulation from EDM paper / k-diffusion
         c_noise = sigma.log() / 4  # (B, 1, 1)
         time_emb = self.act(self.timestep_embed(c_noise))  # (B, 1, T)
 
-        ctx_emb = torch.cat([time_emb, context], dim=-1)  # (B, 1, functional+T)
+        ctx_emb = torch.cat([time_emb, context], dim=-1)  # (B, 1, F+T)
         # TODO: might want to add additional linear embedding net
         # for context or only cond_feats
 
@@ -525,7 +525,7 @@ COND_FEATURE_WIDTHS = {
 }
 
 
-def cond_feature_slice(config, name):
+def cond_feature_range(config, name):
     """Columns of ``cond_feats`` holding one conditioning feature.
 
     Parameters
@@ -536,7 +536,7 @@ def cond_feature_slice(config, name):
 
     Returns
     -------
-    slice or None
+    (int, int) or None
         ``None`` if the feature is not being conditioned on.
 
     Raises
@@ -564,7 +564,7 @@ def cond_feature_slice(config, name):
         return None
     position = cond_features.index(name)
     start = sum(widths[:position])
-    return slice(start, start + widths[position])
+    return start, start + widths[position]
 
 
 # --------------------------------------------------------------------------- #
@@ -574,7 +574,7 @@ class PointwiseNet_kDiffusion_v2(Module):
     """
     We can have 1 generalist (the old model)
     Any number of experts who combine their output all at once.
-    Any number of specalists, only one of whom is active at once.
+    Any number of specialists, only one of whom is active at once.
     If more than once network was active, we also have a pooling network at the end.
 
     Every branch is a ConcatSquashLinear stack of the same shape as the v1 net:
@@ -590,7 +590,7 @@ class PointwiseNet_kDiffusion_v2(Module):
 
         use_generalist:   bool                         (default True)
         use_experts:      false | int | "incident_pdg" (default False)
-        use_specalists:   false | "incident_pdg"       (default False)
+        use_specialists:   false | "incident_pdg"       (default False)
         diffusion_generalist_hidden_dims: list[int]
         diffusion_expert_hidden_dims:     list[int]
         diffusion_specialist_hidden_dims: list[int]
@@ -623,25 +623,23 @@ class PointwiseNet_kDiffusion_v2(Module):
 
         self.experts = None
         if config["model"].get("use_experts", False):
-            self.experts = self._setup_experts(
-                config, point_dim, context_dim, time_dim
-            )
+            self.experts = self._setup_experts(config, point_dim, context_dim, time_dim)
             n_outputs += len(self.experts)
 
-        self.specalists = None
-        self.specalist_slice = None
-        if config["model"].get("use_specalists", False):
-            self.specalists = self._setup_specalists(
+        self.specialists = None
+        self.specialist_routing_range = None
+        if config["model"].get("use_specialists", False):
+            # routing is on the one-hot pdg block of the context
+            self.specialist_routing_range = cond_feature_range(config, "incident_pdg")
+            self.specialists = self._setup_specialists(
                 config, point_dim, context_dim, time_dim
             )
-            # routing is on the one-hot pdg block of the context
-            self.specalist_slice = cond_feature_slice(config, "incident_pdg")
             n_outputs += 1
 
         if n_outputs == 0:
             raise ValueError(
                 "At least one of use_generalist, use_experts, "
-                "or use_specalists must be True"
+                "or use_specialists must be True"
             )
         self.use_pooling = n_outputs > 1
         self.pooling = None
@@ -709,15 +707,23 @@ class PointwiseNet_kDiffusion_v2(Module):
             ]
         )
 
-    def _setup_specalists(self, config, point_dim, context_dim, time_dim):
-        n_specalists = self._count_branches(config, "use_specalists", allow_int=False)
+    def _setup_specialists(self, config, point_dim, context_dim, time_dim):
+        n_specialists = self._count_branches(config, "use_specialists", allow_int=False)
+        if self.specialist_routing_range is None and n_specialists > 1:
+            raise ValueError(
+                "n_specialists > 1, but specialist_routing_range is not set"
+            )
+        routing_length = (
+            self.specialist_routing_range[1] - self.specialist_routing_range[0]
+        )
+        specialist_context_dim = context_dim + time_dim - routing_length
         hidden_dims = config["model"].get(
             "diffusion_specialist_hidden_dims", self.DEFAULT_HIDDEN_DIMS
         )
         return ModuleList(
             [
-                self._stack(hidden_dims, point_dim, point_dim, context_dim + time_dim)
-                for _ in range(n_specalists)
+                self._stack(hidden_dims, point_dim, point_dim, specialist_context_dim)
+                for _ in range(n_specialists)
             ]
         )
 
@@ -746,24 +752,26 @@ class PointwiseNet_kDiffusion_v2(Module):
                 out = self.act(out)
         return out
 
-    def _run_specalists(self, x, ctx_emb, context):
-        """Hard routing: each event goes through exactly one specalist.
+    def _run_specialists(self, x, ctx_emb, context):
+        """Hard routing: each event goes through exactly one specialist.
 
         ``context`` is ``(B, 1, C)``.  The pdg block is one-hot, and the
         conditioning preprocessing leaves it untouched, so an ``argmax`` over
         that block recovers the index into ``config["simulate_pdgs"]``.
         """
-        # TODO, what is the 0 doing in there?
-        route = context[:, 0, self.specalist_slice].argmax(dim=-1)  # (B,)
+        # there is a 0 because context has been broadcast up from (B, C) to (B, 1, C)
+        route = context[
+            :, 0, self.specialist_routing_range[0] : self.specialist_routing_range[1]
+        ].argmax(
+            dim=-1
+        )  # (B,)
+
         out = torch.zeros_like(x)
-        for index, specalist in enumerate(self.specalists):
+        for index, specialist in enumerate(self.specialists):
             chosen = route == index
             if not bool(chosen.any()):
                 continue
-            # TODO, consider taking only the section of the context that
-            # isn't already being used to route... would change the shape of the
-            # specalist conditioning too....
-            out[chosen] = self._run_stack(specalist, x[chosen], ctx_emb[chosen])
+            out[chosen] = self._run_stack(specialist, x[chosen], ctx_emb[chosen])
         return out
 
     def forward(self, x, sigma, context):
@@ -771,17 +779,17 @@ class PointwiseNet_kDiffusion_v2(Module):
         Args:
             x:  Point clouds at some timestep t, (B, N, d).
             sigma:     Time. (B, ).  --> becomes "sigma" in k-diffusion
-            context:  Shape latents. (B, functional).
+            context:  Shape latents. (B, F).
         """
         batch_size = x.size(0)
         sigma = sigma.view(batch_size, 1, 1)  # (B, 1, 1)
-        context = context.view(batch_size, 1, -1)  # (B, 1, functional)
+        context = context.view(batch_size, 1, -1)  # (B, 1, F)
 
         # formulation from EDM paper / k-diffusion
         c_noise = sigma.log() / 4  # (B, 1, 1)
         time_emb = self.act(self.timestep_embed(c_noise))  # (B, 1, T)
 
-        ctx_emb = torch.cat([time_emb, context], dim=-1)  # (B, 1, functional+T)
+        ctx_emb = torch.cat([time_emb, context], dim=-1)  # (B, 1, F+T)
         # TODO: might want to add additional linear embedding net
         # for context or only cond_feats
 
@@ -791,12 +799,19 @@ class PointwiseNet_kDiffusion_v2(Module):
         if self.experts is not None:
             for expert in self.experts:
                 branch_outputs.append(self._run_stack(expert, x, ctx_emb))
-        if self.specalists is not None:
-            branch_outputs.append(self._run_specalists(x, ctx_emb, context))
+        if self.specialists is not None:
+            specialist_ctx_emb = torch.cat(
+                [
+                    time_emb,
+                    context[:, :, : self.specialist_routing_range[0]],
+                    context[:, :, self.specialist_routing_range[1] :],
+                ],
+                dim=-1,
+            )
+            branch_outputs.append(self._run_specialists(x, specialist_ctx_emb, context))
 
         if self.pooling is None:
             return branch_outputs[0]
 
         out = torch.cat(branch_outputs, dim=-1)  # (B, N, n_outputs*d)
         return self._run_stack(self.pooling, out, ctx_emb)
-

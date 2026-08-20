@@ -1,15 +1,14 @@
 # ASAP
 - Make the pcfm for multiple particles
     * wire this up to the summary_plots_best
-- need to write an MoE variant
 - need to write a specialist variant.
     * consider setting the specialists to not take the context that's choosing them (diffusion) would need to do this soon, as training is long.
-
 - Plotting updates
     * Need to be able to compare multiple trainings in plotting - new NB
 - Summarise against other models.
     * some kind of summary stat - sliced wasserstein
     * timing?
+- Have a look at Mose on the PointCountFM_private, see if it can also do something
 
 
 # at some point in the future
