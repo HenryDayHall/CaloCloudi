@@ -22,6 +22,11 @@ class KLDloss(Module):
         return KLD
 
 
+def is_v2_config(config):
+    v2_keys = ["use_generalist", "use_experts", "use_specalists"]
+    return all(key in config["model"] for key in v2_keys)
+
+
 class Diffusion(Module):
     """
     Default Caloclouds diffusion model for generating points.
@@ -47,7 +52,10 @@ class Diffusion(Module):
         self.distillation = distillation
         device = config["device"]
 
-        net = PointwiseNet_kDiffusion(config=config)
+        if is_v2_config(config):
+            net = PointwiseNet_kDiffusion_v2(config=config)
+        else:
+            net = PointwiseNet_kDiffusion(config=config)
 
         # set up the denoiser
         sigma_data = config["training"]["sigma_data"]
@@ -504,14 +512,93 @@ class PointwiseNet_kDiffusion(Module):
         return out
 
 
-# this is where we want to try MoE
+# --------------------------------------------------------------------------- #
+# locating a conditioning feature inside the context vector
+# --------------------------------------------------------------------------- #
+# Widths of the conditioning features as they arrive in ``cond_feats``.
+# ``incident_pdg`` is one-hot encoded over ``config["simulate_pdgs"]``
+# (see ``dataset.pdgs_to_onehot`` / ``inference.pdg_to_onehot_in_full_cond``)
+# so its width is not fixed and is worked out per config.
+COND_FEATURE_WIDTHS = {
+    "incident_energy": 1,
+    "incident_direction": 3,
+}
+
+
+def cond_feature_slice(config, name):
+    """Columns of ``cond_feats`` holding one conditioning feature.
+
+    Parameters
+    ----------
+    config : dict
+    name : str
+        A member of ``config["model"]["cond_features"]``.
+
+    Returns
+    -------
+    slice or None
+        ``None`` if the feature is not being conditioned on.
+
+    Raises
+    ------
+    ValueError
+        If the implied width disagrees with ``config["model"]["cond_dim"]``,
+        which means this table has gone stale.
+    """
+    cond_features = list(config["model"]["cond_features"])
+    widths = []
+    for feature in cond_features:
+        if feature == "incident_pdg":
+            widths.append(len(config["simulate_pdgs"]))
+        elif feature in COND_FEATURE_WIDTHS:
+            widths.append(COND_FEATURE_WIDTHS[feature])
+        else:
+            raise NotImplementedError(f"Unknown conditioning feature {feature}")
+    total = sum(widths)
+    if total != config["model"]["cond_dim"]:
+        raise ValueError(
+            f"cond_features {cond_features} imply a context of width {total}, "
+            f"but config['model']['cond_dim'] is {config['model']['cond_dim']}"
+        )
+    if name not in cond_features:
+        return None
+    position = cond_features.index(name)
+    start = sum(widths[:position])
+    return slice(start, start + widths[position])
+
+
+# --------------------------------------------------------------------------- #
+# the network
+# --------------------------------------------------------------------------- #
 class PointwiseNet_kDiffusion_v2(Module):
     """
     We can have 1 generalist (the old model)
     Any number of experts who combine their output all at once.
     Any number of specalists, only one of whom is active at once.
     If more than once network was active, we also have a pooling network at the end.
+
+    Every branch is a ConcatSquashLinear stack of the same shape as the v1 net:
+    it takes the ``(B, N, point_dim)`` points and returns ``(B, N, point_dim)``.
+    The branch outputs are concatenated on the feature axis and reduced back to
+    ``point_dim`` by the pooling stack, which is itself conditioned on the
+    context, so the pooling layers act as the router that weighs the branches
+    against each other.  With a single branch the pooling stack is skipped
+    entirely and the module is numerically identical to
+    ``PointwiseNet_kDiffusion`` (given the same hidden widths).
+
+    Config keys, all under ``config["model"]``::
+
+        use_generalist:   bool                         (default True)
+        use_experts:      false | int | "incident_pdg" (default False)
+        use_specalists:   false | "incident_pdg"       (default False)
+        diffusion_generalist_hidden_dims: list[int]
+        diffusion_expert_hidden_dims:     list[int]
+        diffusion_specialist_hidden_dims: list[int]
+        diffusion_pooling_hidden_dims:    list[int]
     """
+
+    DEFAULT_HIDDEN_DIMS = [128, 256, 512, 256, 128]
+    DEFAULT_POOLING_DIMS = [128]
 
     def __init__(self, config):
         super().__init__()
@@ -521,37 +608,35 @@ class PointwiseNet_kDiffusion_v2(Module):
         fourier_scale = (
             16  # 1 in k-diffusion, 16 in EDM, 30 in Score-based generative modeling
         )
+        ctx_dim = context_dim + time_dim
 
-        # TODO wip
+        self.act = functional.leaky_relu
+
         n_outputs = 0
-        if config["model"]["use_generalist"]:
+
+        self.generalist = None
+        if config["model"].get("use_generalist", True):
+            self.generalist = self._setup_generalist(
+                config, point_dim, context_dim, time_dim
+            )
             n_outputs += 1
-        if config["model"]["use_experts"]:
-            if isinstance(config["model"]["use_experts"], int):
-                n_experts = config["model"]["use_experts"]
-            elif (
-                isinstance(config["model"]["use_experts"], str)
-                and config["model"]["use_experts"] == "incident_pdg"
-            ):
-                n_experts = len(config["simulate_pdgs"])
-            else:
-                raise NotImplementedError(
-                    f"unknown value for config['model']['use_experts']: "
-                    f"{config['model']['use_experts']}"
-                )
-            n_outputs += n_experts
-        if config["model"]["use_specalists"]:
+
+        self.experts = None
+        if config["model"].get("use_experts", False):
+            self.experts = self._setup_experts(
+                config, point_dim, context_dim, time_dim
+            )
+            n_outputs += len(self.experts)
+
+        self.specalists = None
+        self.specalist_slice = None
+        if config["model"].get("use_specalists", False):
+            self.specalists = self._setup_specalists(
+                config, point_dim, context_dim, time_dim
+            )
+            # routing is on the one-hot pdg block of the context
+            self.specalist_slice = cond_feature_slice(config, "incident_pdg")
             n_outputs += 1
-            if (
-                isinstance(config["model"]["use_specalists"], str)
-                and config["model"]["use_specalists"] == "incident_pdg"
-            ):
-                n_specalists = len(config["simulate_pdgs"])
-            else:
-                raise NotImplementedError(
-                    f"unknown value for config['model']['use_specalists']: "
-                    f"{config['model']['use_specalists']}"
-                )
 
         if n_outputs == 0:
             raise ValueError(
@@ -559,18 +644,11 @@ class PointwiseNet_kDiffusion_v2(Module):
                 "or use_specalists must be True"
             )
         self.use_pooling = n_outputs > 1
-
-        self.act = functional.leaky_relu
-        default_hidden_dims = [128, 256, 512, 256, 128]
-        hidden_dims = config["model"].get(
-            "diffusion_generalist_hidden_dims", default_hidden_dims
-        )
-        all_dims = [point_dim] + hidden_dims + [point_dim]
-        all_context = context_dim + time_dim
-        layers = []
-        for dim_in, dim_out in zip(all_dims[:-1], all_dims[1:]):
-            layers.append(ConcatSquashLinear(dim_in, dim_out, all_context))
-        self.layers = ModuleList(layers)
+        self.pooling = None
+        if self.use_pooling:
+            self.pooling = self._setup_pooling(
+                config, n_outputs * point_dim, point_dim, ctx_dim
+            )
 
         self.timestep_embed = torch.nn.Sequential(
             k_diffusion.layers.FourierFeatures(1, time_dim, std=fourier_scale),
@@ -578,27 +656,115 @@ class PointwiseNet_kDiffusion_v2(Module):
             torch.nn.Linear(time_dim, time_dim),  # this is a trainable layer
         )
 
-    def _setup_generalist(self, config, point_dim, context_dim, time_dim):
-        default_hidden_dims = [128, 256, 512, 256, 128]
-        hidden_dims = config["model"].get(
-            "diffusion_generalist_hidden_dims", default_hidden_dims
+    # ----------------------------------------------------------------- #
+    # construction
+    # ----------------------------------------------------------------- #
+    @staticmethod
+    def _stack(hidden_dims, dim_in, dim_out, dim_ctx):
+        """One ConcatSquashLinear branch, dim_in -> hidden_dims -> dim_out."""
+        all_dims = [dim_in] + list(hidden_dims) + [dim_out]
+        return ModuleList(
+            [
+                ConcatSquashLinear(one_in, one_out, dim_ctx)  # noqa: F821
+                for one_in, one_out in zip(all_dims[:-1], all_dims[1:])
+            ]
         )
-        all_dims = [point_dim] + hidden_dims + [point_dim]
-        all_context = context_dim + time_dim
-        layers = []
-        for dim_in, dim_out in zip(all_dims[:-1], all_dims[1:]):
-            layers.append(ConcatSquashLinear(dim_in, dim_out, all_context))
-        layers = ModuleList(layers)
-        return layers
 
-    def _setup_experts():
-        pass  # TODO
+    @staticmethod
+    def _count_branches(config, key, allow_int):
+        """How many sub-networks ``config["model"][key]`` asks for."""
+        value = config["model"][key]
+        if isinstance(value, str) and value == "incident_pdg":
+            if "incident_pdg" not in config["model"]["cond_features"]:
+                raise ValueError(
+                    f"config['model']['{key}'] routes on incident_pdg, so "
+                    "incident_pdg must be in config['model']['cond_features']"
+                )
+            return len(config["simulate_pdgs"])
+        # bool is a subclass of int, so `use_experts: true` would silently
+        # become a single expert without this guard
+        if allow_int and isinstance(value, int) and not isinstance(value, bool):
+            if value < 1:
+                raise ValueError(f"config['model']['{key}'] must be at least 1")
+            return int(value)
+        raise NotImplementedError(
+            f"unknown value for config['model']['{key}']: {value}"
+        )
 
-    def _setup_specalists():
-        pass  # TODO
+    def _setup_generalist(self, config, point_dim, context_dim, time_dim):
+        hidden_dims = config["model"].get(
+            "diffusion_generalist_hidden_dims", self.DEFAULT_HIDDEN_DIMS
+        )
+        return self._stack(hidden_dims, point_dim, point_dim, context_dim + time_dim)
 
-    def _setup_pooling():
-        pass  # TODO should just be a passthrough if we don't use it
+    def _setup_experts(self, config, point_dim, context_dim, time_dim):
+        n_experts = self._count_branches(config, "use_experts", allow_int=True)
+        hidden_dims = config["model"].get(
+            "diffusion_expert_hidden_dims", self.DEFAULT_HIDDEN_DIMS
+        )
+        return ModuleList(
+            [
+                self._stack(hidden_dims, point_dim, point_dim, context_dim + time_dim)
+                for _ in range(n_experts)
+            ]
+        )
+
+    def _setup_specalists(self, config, point_dim, context_dim, time_dim):
+        n_specalists = self._count_branches(config, "use_specalists", allow_int=False)
+        hidden_dims = config["model"].get(
+            "diffusion_specialist_hidden_dims", self.DEFAULT_HIDDEN_DIMS
+        )
+        return ModuleList(
+            [
+                self._stack(hidden_dims, point_dim, point_dim, context_dim + time_dim)
+                for _ in range(n_specalists)
+            ]
+        )
+
+    def _setup_pooling(self, config, dim_in, dim_out, dim_ctx):
+        """Reduce the concatenated branch outputs back to one point.
+
+        Returns ``None`` when only one branch is active, in which case
+        ``forward`` hands that branch's output straight back.
+        """
+        if dim_in == dim_out:
+            return None
+        hidden_dims = config["model"].get(
+            "diffusion_pooling_hidden_dims", self.DEFAULT_POOLING_DIMS
+        )
+        return self._stack(hidden_dims, dim_in, dim_out, dim_ctx)
+
+    # ----------------------------------------------------------------- #
+    # evaluation
+    # ----------------------------------------------------------------- #
+    def _run_stack(self, layers, x, ctx_emb):
+        """Apply one branch; activations between layers but not on the output."""
+        out = x
+        for i, layer in enumerate(layers):
+            out = layer(ctx=ctx_emb, x=out)
+            if i < len(layers) - 1:
+                out = self.act(out)
+        return out
+
+    def _run_specalists(self, x, ctx_emb, context):
+        """Hard routing: each event goes through exactly one specalist.
+
+        ``context`` is ``(B, 1, C)``.  The pdg block is one-hot, and the
+        conditioning preprocessing leaves it untouched, so an ``argmax`` over
+        that block recovers the index into ``config["simulate_pdgs"]``.
+        """
+        # TODO, what is the 0 doing in there?
+        route = context[:, 0, self.specalist_slice].argmax(dim=-1)  # (B,)
+        out = torch.zeros_like(x)
+        for index, specalist in enumerate(self.specalists):
+            chosen = route == index
+            if not bool(chosen.any()):
+                continue
+            # TODO, consider taking only the section of the context that
+            # isn't already being used to route... would change the shape of the
+            # specalist conditioning too....
+            out[chosen] = self._run_stack(specalist, x[chosen], ctx_emb[chosen])
+        return out
 
     def forward(self, x, sigma, context):
         """
@@ -619,11 +785,18 @@ class PointwiseNet_kDiffusion_v2(Module):
         # TODO: might want to add additional linear embedding net
         # for context or only cond_feats
 
-        out = x
-        for i, layer in enumerate(self.layers):
-            out = layer(ctx=ctx_emb, x=out)
-            if i < len(self.layers) - 1:
-                out = self.act(out)
+        branch_outputs = []
+        if self.generalist is not None:
+            branch_outputs.append(self._run_stack(self.generalist, x, ctx_emb))
+        if self.experts is not None:
+            for expert in self.experts:
+                branch_outputs.append(self._run_stack(expert, x, ctx_emb))
+        if self.specalists is not None:
+            branch_outputs.append(self._run_specalists(x, ctx_emb, context))
 
-        return out
+        if self.pooling is None:
+            return branch_outputs[0]
+
+        out = torch.cat(branch_outputs, dim=-1)  # (B, N, n_outputs*d)
+        return self._run_stack(self.pooling, out, ctx_emb)
 

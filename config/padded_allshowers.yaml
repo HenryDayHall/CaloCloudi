@@ -36,13 +36,6 @@ model:
   s_noise: 1.0
   sigma_min: 0.002
   sigma_max: 80.0
-  use_generalist: true
-  diffusion_pooling_hidden_dims: [128]
-  diffusion_generalist_hidden_dims: [128, 256, 512, 256, 128]
-  use_experts: false  # can be false, a number or incident_pdg
-  diffusion_expert_hidden_dims: [128, 256, 512, 256, 128]
-  use_specalists: false  # can be false or incident_pdg
-  diffusion_specialist_hidden_dims: [128, 256, 512, 256, 128]
   
 
 data:
