@@ -38,7 +38,10 @@ def get_from_basic(config, pcfm_path, n_events):
 n_events = 1000
 
 # this is photons only....
-external_cond = "/home/dayhallh/training/CC_ExpSpec/PointCountFM_private/results/20260819_154640_CaloClouds_photonsOnly/new_samples.h5"
+external_cond = {
+        "photons_only": "/home/dayhallh/training/CC_ExpSpec/PointCountFM_private/results/20260819_154640_CaloClouds_photonsOnly/new_samples.h5",
+        "EM": None
+        }
 
 if len(sys.argv) > 1:
     log_dir = sys.argv[1]
@@ -81,16 +84,16 @@ while True:
     example_events.plot_and_save(model_path, [100])
     folder_path = os.path.dirname(os.path.dirname(model_path))
     # external cond
-    cond, points_per_layer, energy_per_layer = get_from_basic(
-        config, external_cond, n_events
-    )
-    model_kwargs = {
-        "cond": cond,
-        "points_per_layer": points_per_layer,
-        "energy_per_layer": energy_per_layer,
-        "rescale_energy": True,
-    }
-    summarise.complete_model(model_path, n_events, **model_kwargs)
+    # cond, points_per_layer, energy_per_layer = get_from_basic(
+    #     config, external_cond, n_events
+    # )
+    # model_kwargs = {
+    #     "cond": cond,
+    #     "points_per_layer": points_per_layer,
+    #     "energy_per_layer": energy_per_layer,
+    #     "rescale_energy": True,
+    # }
+    # summarise.complete_model(model_path, n_events, **model_kwargs)
     with open(os.path.join(folder_path, "last_best_seen.txt"), "w") as f:
         f.write(model_path)
     print("Done")

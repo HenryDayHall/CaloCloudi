@@ -777,12 +777,13 @@ class ReferenceSummary(ReferenceBase, SingularsMixin):
 
 
 def complete_model(model_path, n_events, **model_summary_kwargs):
+    force = model_summary_kwargs.pop("force", False)
     external_cond = "cond" in model_summary_kwargs
     rescale_energy = model_summary_kwargs.get("rescale_energy", False)
     output_path = ModelSummary.get_output_path_from_model_path(
         model_path, external_cond, rescale_energy
     )
-    if not os.path.exists(output_path):
+    if not os.path.exists(output_path) or force:
         print(f"Summarising to {output_path}")
         ModelSummary.from_model_path(
             model_path, data_part="test", total_size=n_events, **model_summary_kwargs
@@ -795,7 +796,7 @@ def complete_model(model_path, n_events, **model_summary_kwargs):
         output_path = ModelSummary.get_output_path_from_model_path(
             ema_model_path, external_cond, rescale_energy
         )
-        if not os.path.exists(output_path):
+        if not os.path.exists(output_path) or force:
             print(f"Summarising to {output_path}")
             ModelSummary.from_model_path(
                 ema_model_path,
