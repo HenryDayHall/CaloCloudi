@@ -24,7 +24,7 @@ class KLDloss(Module):
 
 def is_v2_config(config):
     v2_keys = ["use_generalist", "use_experts", "use_specialists"]
-    return all(key in config["model"] for key in v2_keys)
+    return any(key in config["model"] for key in v2_keys)
 
 
 class Diffusion(Module):
@@ -53,8 +53,10 @@ class Diffusion(Module):
         device = config["device"]
 
         if is_v2_config(config):
+            print("Using PointwiseNet_kDiffusion_v2")
             net = PointwiseNet_kDiffusion_v2(config=config)
         else:
+            print("Using PointwiseNet_kDiffusion")
             net = PointwiseNet_kDiffusion(config=config)
 
         # set up the denoiser
