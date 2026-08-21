@@ -40,7 +40,7 @@ n_events = 1000
 # this is photons only....
 external_cond = {
         "photons_only": "/home/dayhallh/training/CC_ExpSpec/PointCountFM_private/results/20260819_154640_CaloClouds_photonsOnly/new_samples.h5",
-        "EM": None
+        "EM": "/home/dayhallh/training/CC_ExpSpec/PointCountFM_private/results/20260820_182856_CaloClouds_EM/new_samples.h5"
         }
 
 if len(sys.argv) > 1:
@@ -78,22 +78,29 @@ while True:
     print(f"Processing {model_path}")
     config = inference.Sampler.get_config_from_model_path(model_path)
     # raw model
-    summarise.complete_model(model_path, n_events)
+    summarise.complete_model(model_path, n_events, force=True)
     # truth corrected points and energy
-    summarise.complete_model(model_path, n_events, rescale_energy=True)
+    summarise.complete_model(model_path, n_events, rescale_energy=True, force=True)
     example_events.plot_and_save(model_path, [100])
     folder_path = os.path.dirname(os.path.dirname(model_path))
     # external cond
-    # cond, points_per_layer, energy_per_layer = get_from_basic(
-    #     config, external_cond, n_events
-    # )
-    # model_kwargs = {
-    #     "cond": cond,
-    #     "points_per_layer": points_per_layer,
-    #     "energy_per_layer": energy_per_layer,
-    #     "rescale_energy": True,
-    # }
-    # summarise.complete_model(model_path, n_events, **model_kwargs)
+    if "Padded_photon" in config["data"]["dataset_path"]:
+        external = external_cond["photons_only"]
+    elif "Padded_" in config["data"]["dataset_path"]:
+        external = external_cond["EM"]
+    else:
+        external = None
+    if external is not None:
+        cond, points_per_layer, energy_per_layer = get_from_basic(
+            config, external, n_events
+        )
+        model_kwargs = {
+            "cond": cond,
+            "points_per_layer": points_per_layer,
+            "energy_per_layer": energy_per_layer,
+            "rescale_energy": True,
+        }
+        summarise.complete_model(model_path, n_events, force=True, **model_kwargs)
     with open(os.path.join(folder_path, "last_best_seen.txt"), "w") as f:
         f.write(model_path)
     print("Done")

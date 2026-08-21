@@ -1,14 +1,9 @@
 # ASAP
 - Make the pcfm for multiple particles
     * wire this up to the summary_plots_best
-- need to write a specialist variant.
-    * consider setting the specialists to not take the context that's choosing them (diffusion) would need to do this soon, as training is long.
-- Plotting updates
-    * Need to be able to compare multiple trainings in plotting - new NB
 - Summarise against other models.
     * some kind of summary stat - sliced wasserstein
     * timing?
-- Have a look at Mose on the PointCountFM_private, see if it can also do something
 
 
 # at some point in the future
@@ -19,6 +14,7 @@
 - Add comments that explain things to the config files from the old config files
 - Consider making a subdictionary for the diffusion parts of the model
 - Other models - AS - CC3
+- Have a look at Mose on the PointCountFM_private, see if it can also do something
 
 # Slides planned
 - Updates and Summary of CaloClouds 3.5
@@ -27,7 +23,7 @@
     * Steal plots from last presentation
 - New particles available
     * A performance plot comparing generalist w/ only photons to generalist w/ e+e-and photons
-    ^ TODO
+    ^ Done
 - Summary of experiment with MoE and MoS, note that num parameters held constant
     * Performance plots comparing 3 models, for just one part of CaloClouds
     ^ TODO

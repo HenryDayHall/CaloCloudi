@@ -528,9 +528,6 @@ class SingularsMixin:
         return singulars
 
 
-# TODO
-# Can we not call with custom cond without adding it as a input?
-# can take sample cells as input
 class ModelSummary(SingularsMixin):
     def __init__(
         self,
@@ -670,6 +667,9 @@ class ModelSummary(SingularsMixin):
             start = i * batch_length
             end = min((i + 1) * batch_length, total_points_to_sample)
             sample = sampler.sample(self.cond[start:end], self.points[start:end])
+            if "Padded_photon_full_" in self.config["data"]["dataset_path"]:
+                # units issue with this dataset
+                sample[..., 3] *= 10**(-3)
             physical_points, point_layer_ids = inference.sample_to_physical(
                 sample, self.points_per_layer[start:end], self.config
             )
