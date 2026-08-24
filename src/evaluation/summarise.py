@@ -507,7 +507,12 @@ class SingularsMixin:
 
     def _calculate_singulars(self, cond, cells):
         singulars = {}
-        directions = cond[:, [2, 0, 1]]
+        direction_start, direction_end = inference.get_col_range_in_cond(
+            self.config, "incident_direction"
+        )
+        directions = cond[:, direction_start:direction_end]
+        directions = directions[:, [1, 2, 0]]
+
         singulars["cond"] = cond
         singulars["pca"] = pca(cells)
         singulars["pca_top4"] = pca(cells, energy_fraction=0.04)
@@ -515,16 +520,25 @@ class SingularsMixin:
         cell_energy_counts, cell_energy_edges = cell_energies(cells)
         singulars["cell_energies"] = cell_energy_counts
         singulars["cell_energies_edges"] = cell_energy_edges
-        radial_energy_counts, radial_energy_edges = radial_energy(cells, directions)
+        singulars["layer_energies"] = layer_energies(cells, self.config)
+        singulars["layer_occupancies"] = layer_occupancies(cells, self.config)
+        singulars["event_occupancies"] = event_occupancies(cells)
+
+        # need to move the cells to 0 to get the the radials
+        floored_cells = np.copy(cells)
+        floored_cells[:, :, 1] -= self.config["detector"]["layer_bottom_pos"][0]
+        del cells
+        radial_energy_counts, radial_energy_edges = radial_energy(
+            floored_cells, directions
+        )
         assert radial_energy_counts.shape[1] == radial_energy_edges.shape[0] - 1
         singulars["radial_energy"] = radial_energy_counts
         singulars["radial_energy_edges"] = radial_energy_edges
-        singulars["layer_energies"] = layer_energies(cells, self.config)
-        singulars["event_occupancies"] = event_occupancies(cells)
-        radial_occ_counts, radial_occ_edges = radial_occupancies(cells, directions)
+        radial_occ_counts, radial_occ_edges = radial_occupancies(
+            floored_cells, directions
+        )
         singulars["radial_occupancies"] = radial_occ_counts
         singulars["radial_occupancies_edges"] = radial_occ_edges
-        singulars["layer_occupancies"] = layer_occupancies(cells, self.config)
         return singulars
 
 
@@ -667,9 +681,6 @@ class ModelSummary(SingularsMixin):
             start = i * batch_length
             end = min((i + 1) * batch_length, total_points_to_sample)
             sample = sampler.sample(self.cond[start:end], self.points[start:end])
-            if "Padded_photon_full_" in self.config["data"]["dataset_path"]:
-                # units issue with this dataset
-                sample[..., 3] *= 10**(-3)
             physical_points, point_layer_ids = inference.sample_to_physical(
                 sample, self.points_per_layer[start:end], self.config
             )
@@ -678,6 +689,19 @@ class ModelSummary(SingularsMixin):
                 physical_points = inference.energy_corrections(
                     physical_points, point_layer_ids, self.energy_per_layer[start:end]
                 )
+            if True:  # "Padded_photon_full_" in self.config["data"]["dataset_path"]:
+                # TODO should make this check for agreement between batches
+                energy_mask = physical_points[..., 3] > 0
+                mean_energy = np.mean(physical_points[energy_mask][..., 3])
+                print(self.config["output_path"])
+                print(f"Mean point energy: {mean_energy}")
+                if mean_energy > 0.1:
+                    # units issue with this dataset
+                    physical_points[..., 3] *= 10 ** (-3)
+                    print("Warning, might be having an issue with energy units")
+                elif mean_energy < 0.000001:
+                    physical_points[..., 3] *= 10 ** (3)
+                    print("Warning, might be having an issue with energy units")
             physical_points = inference.unshift_points(
                 physical_points, point_layer_ids, self.cond[start:end], self.config
             )
@@ -704,6 +728,15 @@ class ModelSummary(SingularsMixin):
         """
         Assume that the user has already established this isn't too memory intensive
         """
+        mean_energy = np.mean(sample_cells[..., 3])
+        print(f"Mean cell energy: {mean_energy}")
+        # TODO should make this check for agreement between batches
+        if mean_energy > 0.001:
+            print("Warning, might be having a cell level issue with energy units")
+            sample_cells[..., 3] *= 10 ** (-3)
+        if mean_energy < 0.0000001:
+            print("Warning, might be having a a cell level issue with energy units")
+            sample_cells[..., 3] *= 10 ** (3)
         sample_singulars = self.calculate_singulars(self.cond, sample_cells)
         if output_path is not None:
             np.savez(output_path, **sample_singulars)

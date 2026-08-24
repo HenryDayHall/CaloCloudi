@@ -397,6 +397,8 @@ class RatioPlots:
         logy=False,
         truth_bin_errors=None,
         truth_bin_errors_down=None,
+        ratio_clip_min = 0.4, 
+        ratio_clip_max = 1.6,
     ):
         """
         Parameters
@@ -413,6 +415,7 @@ class RatioPlots:
         self.n_features = len(x_labels)
         self.n_cols = min(self.n_features, max_cols)
         self.n_rows = int(np.ceil(self.n_features / self.n_cols))
+        self.ratio_clip = (ratio_clip_min, ratio_clip_max)
         height_ratios = [3, 1] * self.n_rows
         self.fig, self.axes = plt.subplots(
             2 * self.n_rows,
@@ -613,10 +616,14 @@ class RatioPlots:
     def finalise(self):
         self.axes[-2, -1].legend()
         for i, (y_min, y_max) in enumerate(self.ratio_min_maxes):
-            clipped_min = max(y_min - 0.1, 0.0)
-            clipped_max = min(y_max + 0.1, 2.0)
-            clipped_min = 0.6
-            clipped_max = 1.4
+            if self.ratio_clip[0] is None:
+                clipped_min = max(y_min - 0.1, 0.0)
+            else:
+                clipped_min = self.ratio_clip[0]
+            if self.ratio_clip[1] is None:
+                clipped_max = min(y_max + 0.1, 2.0)
+            else:
+                clipped_max = self.ratio_clip[1]
             row = int(i / self.n_cols)
             col = i - (row * self.n_cols)
             ratio_ax = self.axes[row * 2 + 1, col]

@@ -241,8 +241,8 @@ def plot_example_events(
             view,
             title=f"Model – {label}",
         )
-        _draw_direction(axes[0, col], cond_i, view, level)
-        _draw_direction(axes[1, col], cond_i, view, level)
+        #_draw_direction(axes[0, col], cond_i, view, level)
+        #_draw_direction(axes[1, col], cond_i, view, level)
 
     fig.suptitle(f"Event {event_index} – Level: {level}", fontsize=14)
     plt.tight_layout()
@@ -265,7 +265,7 @@ def plot_and_save(model_path, event_indices=None):
         print(event_index)
         for level in ["data", "physical", "cells"]:
             print(level)
-            output_path = model_base + f'_{level}_{event_index}.png'
+            output_path = model_base + f'_{level}_{event_index}.pdf'
             if os.path.exists(output_path):
                 print(f"Already plotted to {output_path}")
                 continue

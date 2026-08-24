@@ -123,9 +123,11 @@ def common(config):
 
 
 def init_from_scratch(config_path, teacher_model_path):
-    logger = utils.Logger(config_path,
-                          run_type="student",
-                          run_information={"teacher_model_path": teacher_model_path})
+    logger = utils.Logger(
+        config_path,
+        run_type="student",
+        run_info={"teacher_model_path": teacher_model_path},
+    )
     config = logger.config
     setup_dict, validation_checker = common(config)
     for name, function in validation_checker.callables.items():
@@ -133,7 +135,11 @@ def init_from_scratch(config_path, teacher_model_path):
     logger.add_text(
         "Info from validation checker:\n" + str(validation_checker.get_info())
     )
-    teacher_state_dict = torch.load(teacher_model_path, map_location=config["device"])
+    teacher_state_dict = torch.load(
+        teacher_model_path, map_location=config["device"], weights_only=False
+    )
+    if hasattr(teacher_state_dict, "state_dict"):
+        teacher_state_dict = teacher_state_dict.state_dict()
     setup_dict["teacher_model"].load_state_dict(teacher_state_dict)
     logger.add_text(f"Teacher model loaded from {teacher_model_path}")
     if config["training"]["cm_random_init"]:

@@ -29,18 +29,27 @@ def evaluating(net):
             net.train()
 
 
-def get_pdg_col_number(config):
+def get_col_range_in_cond(config, col_name, pdg_expanded=True):
     cond_features = config["model"]["cond_features"]
-    if "incident_pdg" not in cond_features:
+    if col_name not in cond_features:
         return None
     cond_columns = [config["data"][f"{name}_key"] for name in cond_features]
     col_lengths = read_write.get_per_event_length(config, cond_columns)
+    if pdg_expanded:
+        if "incident_pdg" in cond_features:
+            col_lengths["incident_pdg"] = len(config["simulate_pdgs"])
     col_lengths = [col_lengths[name] for name in cond_columns]
-    pdg_pos = 0
+    start_pos = 0
     for name, length in zip(cond_features, col_lengths):
-        if name == "incident_pdg":
+        if name == col_name:
             break
-        pdg_pos += length
+        start_pos += length
+    end_pos = start_pos + length
+    return start_pos, end_pos
+
+
+def get_pdg_col_number(config):
+    pdg_pos, _ = get_col_range_in_cond(config, "incident_pdg")
     return pdg_pos
 
 

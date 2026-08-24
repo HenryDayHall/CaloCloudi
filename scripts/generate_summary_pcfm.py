@@ -84,4 +84,4 @@ else:  # will take from test set
     print("Sampling from test set")
     model_kwargs = {"rescale_energy": True}
 
-summarise.complete_model(model_path, n_events, **model_kwargs)
+summarise.complete_model(model_path, n_events, force=True, **model_kwargs)

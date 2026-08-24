@@ -60,27 +60,34 @@ def search():
         folder = os.path.dirname(ckpt)
         if os.path.exists(os.path.join(folder, "no_summaries")):
             continue
-        model_location = find_best_checkpoint(folder)
-        summary_location = model_location[:-3] + "_summary.npz"
-        if not os.path.exists(summary_location):
-            to_do.append(model_location)
+        try:
+            model_location = find_best_checkpoint(folder)
+        except FileNotFoundError:
+            continue
+        summary_endings = "_summary.npz", "_rescaled_energy_summary.npz", "_external_cond_rescaled_energy_summary.npz"
+        summary_locs = [
+            model_location[:-3] + ending for ending in summary_endings]
+        #if not all(os.path.exists(loc) for loc in summary_locs):
+        #    to_do.append(model_location)
+        to_do.append(model_location)
 
     print(f"Found {len(to_do)} models to process")
     return to_do
 
 
+to_do = search()
 while True:
-    to_do = search()
     if not to_do:
         print("No more models to process")
         break
     model_path = to_do.pop()
+    force = True
     print(f"Processing {model_path}")
     config = inference.Sampler.get_config_from_model_path(model_path)
     # raw model
-    summarise.complete_model(model_path, n_events, force=True)
+    summarise.complete_model(model_path, n_events, force=force)
     # truth corrected points and energy
-    summarise.complete_model(model_path, n_events, rescale_energy=True, force=True)
+    summarise.complete_model(model_path, n_events, rescale_energy=True, force=force)
     example_events.plot_and_save(model_path, [100])
     folder_path = os.path.dirname(os.path.dirname(model_path))
     # external cond
@@ -100,7 +107,7 @@ while True:
             "energy_per_layer": energy_per_layer,
             "rescale_energy": True,
         }
-        summarise.complete_model(model_path, n_events, force=True, **model_kwargs)
+        summarise.complete_model(model_path, n_events, force=force, **model_kwargs)
     with open(os.path.join(folder_path, "last_best_seen.txt"), "w") as f:
         f.write(model_path)
     print("Done")
