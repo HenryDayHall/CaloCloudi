@@ -1,4 +1,6 @@
 import os
+import yaml
+import ot
 
 from scipy.stats import wasserstein_distance_nd
 import numpy as np
@@ -177,9 +179,106 @@ class EMDCalculator(ReferenceBase):
 
 
 class SlicedWassersteinHL:
-    def __init__(self, model_summary):
-        pass
+    def __init__(
+        self,
+        model_summary,
+        reference_summary,
+        n_projections=1000,
+        force_redo=False,
+        printer=print,
+    ):
+        self.model_summary = model_summary
+        self.printer = printer
+        self.n_projections = n_projections
+        self.reference_summary = reference_summary
+        ref_cond = self.reference_summary.singulars["cond"]
+        mod_cond = self.model_summary.singulars["cond"]
+        if not np.allclose(ref_cond, mod_cond):
+            raise ValueError("Reference and model conditions do not match")
+        if os.path.exists(self.output_path) and not force_redo:
+            self.results = self.read_output(self.output_path)
+        else:
+            self.num_projections = n_projections
+            distance, error = self.calculate()
+            self.results = {"distance": distance, "error": error}
+            have_pdgs = self.model_summary.config["simulate_pdgs"]
+            if len(have_pdgs) > 1:
+                for pdg in have_pdgs:
+                    distance, error = self.calculate(pdg)
+                    self.results[f"pdg_{pdg}_distance"] = distance
+                    self.results[f"pdg_{pdg}_error"] = error
+            self.save()
 
+    def calculate(self, pdg=None):
+        clip_to = 300
+        self.printer("Creating arrays")
+        ref_array = self.construct_array(self.reference_summary, pdg)
+        model_array = self.construct_array(self.model_summary, pdg)
+        self.printer("Running sliced wasserstein")
+        distance, log = ot.sliced_wasserstein_distance(
+            model_array[:clip_to],
+            ref_array[:clip_to],
+            n_projections=self.n_projections,
+            log=True,
+        )
+        error = (np.std(log["projected_emds"]) / self.n_projections) ** 0.5
+        self.printer(f"found distance {distance} +- {error}")
+        return distance, error
+
+    @staticmethod
+    def read_output(output_path):
+        with open(output_path, "r") as f:
+            results = yaml.safe_load(f)
+        return results
+
+    def save(self):
+        results = {key: float(value) for key, value in self.results.items()}
+        with open(self.output_path, "w") as f:
+            yaml.dump(results, f)
+
+    @staticmethod
+    def construct_array(summary, pdg=None):
+        if pdg is None:
+            n_events = summary.singulars["cond"].shape[0]
+        else:
+            n_events = summary.singulars[f"pdg_{pdg}_cond"].shape[0]
+        inputs = []
+        for key in summary.singulars.keys():
+            if pdg is None and key.startswith("pdg_"):
+                continue
+            if pdg is not None and not key.startswith(f"pdg_{pdg}"):
+                continue
+            if key == "cond":
+                continue
+            if summary.singulars[key].shape[0] != n_events:
+                continue
+            values = summary.singulars[key]
+            if len(values.shape) == 1:
+                values = values.reshape(-1, 1)
+            inputs.append(values)
+        return np.concatenate(inputs, axis=1)
+
+    @property
+    def output_path(self):
+        summary_path = self.model_summary.output_path
+        summary_tag = "_summary"
+        summary_pos = summary_path.rfind(summary_tag)
+        start_part = summary_path[:summary_pos]
+        end_part = summary_path[summary_pos + len(summary_tag) :]
+        output_path = start_part + f"_slicedHLwas{self.n_projections}" + end_part
+        return output_path
+
+    @classmethod
+    def from_model_path(cls, model_path, **model_summary_kwargs):
+        model_summary = ModelSummary.from_model_path(model_path, **model_summary_kwargs)
+        ref_kwargs = ["data_part", "pick_events", "total_size", "printer"]
+        ref_kwargs = {
+            key: model_summary_kwargs[key]
+            for key in ref_kwargs
+            if key in model_summary_kwargs
+        }
+        reference_summary = ReferenceSummary.from_model_path(model_path, **ref_kwargs)
+        return cls(model_summary, reference_summary)
 
 
 def _cell_mask(cells):
@@ -490,8 +589,10 @@ def target_to_physical(points, config):
 
 
 class SingularsMixin:
-    def calculate_singulars(self, cond, cells):
-        singulars = self._calculate_singulars(cond, cells)
+    def calculate_singulars(self, cond, cells, bins=None):
+        if bins is None:
+            bins = {}
+        singulars = self._calculate_singulars(cond, cells, bins=bins)
         pdg_list = self.config["simulate_pdgs"]
         n_pdgs_simulated = len(pdg_list)
         if n_pdgs_simulated > 1:
@@ -502,16 +603,20 @@ class SingularsMixin:
                 .astype(bool)
             )
             for pdg_n, pdg in enumerate(pdg_list):
+                tag = f"pdg_{pdg}"
+                my_bins = {
+                    k[len(tag) :]: bins[k] for k in bins.keys() if k.startswith(tag)
+                }
                 pdg_mask = pdg_onehot[:, pdg_n]
                 pdg_singulars = self._calculate_singulars(
-                    cond[pdg_mask], cells[pdg_mask]
+                    cond[pdg_mask], cells[pdg_mask], my_bins
                 )
                 for k, v in pdg_singulars.items():
-                    key = f"pdg_{pdg}_{k}"
+                    key = f"{tag}_{k}"
                     singulars[key] = v
         return singulars
 
-    def _calculate_singulars(self, cond, cells):
+    def _calculate_singulars(self, cond, cells, bins):
         singulars = {}
         direction_start, direction_end = inference.get_col_range_in_cond(
             self.config, "incident_direction"
@@ -520,31 +625,43 @@ class SingularsMixin:
         directions = directions[:, [1, 2, 0]]
 
         singulars["cond"] = cond
+        # not binned
         singulars["pca"] = pca(cells)
+        # not binned
         singulars["pca_top4"] = pca(cells, energy_fraction=0.04)
+        # not binned
         singulars["event_energy"] = event_energy(cells)
-        cell_energy_counts, cell_energy_edges = cell_energies(cells)
+        cell_energy_edges = bins.get("cell_energy_edges", None)
+        cell_energy_counts, cell_energy_edges = cell_energies(cells, cell_energy_edges)
         singulars["cell_energies"] = cell_energy_counts
         singulars["cell_energies_edges"] = cell_energy_edges
+        # not binned
         singulars["layer_energies"] = layer_energies(cells, self.config)
+        # not binned
         singulars["layer_occupancies"] = layer_occupancies(cells, self.config)
+        # not binned
         singulars["event_occupancies"] = event_occupancies(cells)
 
         # need to move the cells to 0 to get the the radials
         floored_cells = np.copy(cells)
         floored_cells[:, :, 1] -= self.config["detector"]["layer_bottom_pos"][0]
         del cells
+        radial_energy_edges = bins.get("radial_energy_edges", None)
         radial_energy_counts, radial_energy_edges = radial_energy(
-            floored_cells, directions
+            floored_cells, directions, radial_energy_edges
         )
         assert radial_energy_counts.shape[1] == radial_energy_edges.shape[0] - 1
         singulars["radial_energy"] = radial_energy_counts
         singulars["radial_energy_edges"] = radial_energy_edges
+        radial_occ_edges = bins.get("radial_occ_edges", None)
         radial_occ_counts, radial_occ_edges = radial_occupancies(
-            floored_cells, directions
+            floored_cells, directions, radial_occ_edges
         )
         singulars["radial_occupancies"] = radial_occ_counts
         singulars["radial_occupancies_edges"] = radial_occ_edges
+        for key in singulars.keys():
+            if key.endswith("edges"):
+                bins[key] = singulars[key]
         return singulars
 
 
@@ -563,6 +680,7 @@ class ModelSummary(SingularsMixin):
         printer=print,
         output_path=None,
         rescale_energy=False,
+        force_redo=False,
     ):
         self.config = config
         self.data_part = data_part
@@ -580,10 +698,16 @@ class ModelSummary(SingularsMixin):
         else:
             self._points = np.sum(self._points_per_layer, axis=1)
         self._energy_per_layer = energy_per_layer
-        if model is not None:
+        self.output_path = output_path
+        if output_path is not None and os.path.exists(output_path) and not force_redo:
+            self.printer(f"Loading singulars from {output_path}")
+            self.singulars = np.load(output_path)
+        elif model is not None:
+            self.printer(f"Have model, and output_path is {output_path}")
             assert sample_cells is None
             self.singulars = self.add_model(model, output_path=output_path)
         elif sample_cells is not None:
+            self.printer(f"Have sample cells, and output_path is {output_path}")
             self.singulars = self.add_sample_cells(
                 sample_cells, output_path=output_path
             )
@@ -648,6 +772,7 @@ class ModelSummary(SingularsMixin):
         printer=print,
         save_summary=True,
         rescale_energy=False,
+        force_redo=False,
     ):
         printer(f"Loading model from {model_path}")
         output_path = None
@@ -671,6 +796,7 @@ class ModelSummary(SingularsMixin):
             printer=printer,
             output_path=output_path,
             rescale_energy=rescale_energy,
+            force_redo=force_redo,
         )
         return this
 
@@ -681,6 +807,8 @@ class ModelSummary(SingularsMixin):
         batches = int(np.ceil(total_points_to_sample / batch_length))
         self.printer("Sampling the model using the reference")
         singulars = {}
+        bins = {}
+        energy_units_correction = 1
         for i in range(batches):
             if i % 10 == 0:
                 self.printer(f"Sampling batch {i}/{batches}")
@@ -696,17 +824,30 @@ class ModelSummary(SingularsMixin):
                     physical_points, point_layer_ids, self.energy_per_layer[start:end]
                 )
             if True:  # "Padded_photon_full_" in self.config["data"]["dataset_path"]:
-                # TODO should make this check for agreement between batches
+                physical_points *= energy_units_correction
                 energy_mask = physical_points[..., 3] > 0
                 mean_energy = np.mean(physical_points[energy_mask][..., 3])
                 self.printer(f"Mean point energy: {mean_energy}")
                 if mean_energy > 0.1:
-                    # units issue with this dataset
-                    physical_points[..., 3] *= 10 ** (-3)
                     self.printer("Warning, might be having an issue with energy units")
+                    if energy_units_correction != 1:
+                        raise RuntimeError(
+                            "Energy units appear to need more than one correction"
+                            f" previous energy correction: {energy_units_correction}"
+                            " but mean energy ({mean_energy}) > 0.1"
+                        )
+                    energy_units_correction *= 10 ** (-3)
+                    physical_points[..., 3] *= energy_units_correction
                 elif mean_energy < 0.000001:
-                    physical_points[..., 3] *= 10 ** (3)
                     self.printer("Warning, might be having an issue with energy units")
+                    if energy_units_correction != 1:
+                        raise RuntimeError(
+                            "Energy units appear to need more than one correction"
+                            f" previous energy correction: {energy_units_correction}"
+                            " but mean energy ({mean_energy}) < 0.000001"
+                        )
+                    energy_units_correction *= 10 ** (3)
+                    physical_points[..., 3] *= energy_units_correction
             physical_points = inference.unshift_points(
                 physical_points, point_layer_ids, self.cond[start:end], self.config
             )
@@ -714,13 +855,13 @@ class ModelSummary(SingularsMixin):
                 physical_points, point_layer_ids, self.config
             )
             del physical_points, point_layer_ids
-            new_singulars = self.calculate_singulars(self.cond[start:end], cells)
+            new_singulars = self.calculate_singulars(
+                self.cond[start:end], cells, bins=bins
+            )
             for key in new_singulars:
                 if key not in singulars:
                     singulars[key] = []
                 singulars[key].append(new_singulars[key])
-        # TODO, works so long as everyone uses the default bins
-        # If we start messing with it, we need to calculate bins before batching
         singulars = {
             k: (v[0] if k.endswith("_edges") else np.concatenate(v, axis=0))
             for k, v in singulars.items()
@@ -735,7 +876,6 @@ class ModelSummary(SingularsMixin):
         """
         mean_energy = np.mean(sample_cells[..., 3])
         print(f"Mean cell energy: {mean_energy}")
-        # TODO should make this check for agreement between batches
         if mean_energy > 0.001:
             self.printer(
                 "Warning, might be having a cell level issue with energy units"
@@ -798,6 +938,10 @@ class ReferenceSummary(ReferenceBase, SingularsMixin):
         )
         return cond, cells
 
+    @property
+    def singulars(self):
+        return self.reference
+
     @classmethod
     def from_model_path(
         cls,
@@ -818,6 +962,12 @@ class ReferenceSummary(ReferenceBase, SingularsMixin):
         return this
 
 
+def get_reference(model_path):
+    output_path = ReferenceSummary.get_output_path_from_model_path(model_path)
+    singulars = np.load(output_path)
+    return singulars
+
+
 def complete_model(model_path, n_events, **model_summary_kwargs):
     force = model_summary_kwargs.pop("force", False)
     external_cond = "cond" in model_summary_kwargs
@@ -825,6 +975,8 @@ def complete_model(model_path, n_events, **model_summary_kwargs):
     output_path = ModelSummary.get_output_path_from_model_path(
         model_path, external_cond, rescale_energy
     )
+    model_summary_kwargs["output_path"] = output_path
+    model_summary_kwargs["force_redo"] = force
     if not os.path.exists(output_path) or force:
         print(f"Summarising to {output_path}")
         ModelSummary.from_model_path(
@@ -838,6 +990,7 @@ def complete_model(model_path, n_events, **model_summary_kwargs):
         output_path = ModelSummary.get_output_path_from_model_path(
             ema_model_path, external_cond, rescale_energy
         )
+        model_summary_kwargs["output_path"] = output_path
         if not os.path.exists(output_path) or force:
             print(f"Summarising to {output_path}")
             ModelSummary.from_model_path(

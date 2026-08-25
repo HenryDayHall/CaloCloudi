@@ -3,7 +3,7 @@ import os
 import matplotlib
 
 known_tags = [
-        'padded photons v1',
+        'padded photons v2',
         'generalist and moe all',
         'only moe all',
         'distill of padded photons v1',
@@ -28,7 +28,7 @@ for tag in known_tags:
 
 
 pretty_names = {
-        "padded photons v1": "Only Photons",
+        "padded photons v2": "Only Photons",
         "padded all v1": "Simple Conditioning",
         "only mos all": "Only MoS",
         "only moe all": "Only MoE",
@@ -41,7 +41,7 @@ pretty_names = {
         }
 
 colours = {
-        "padded photons v1": matplotlib.cm.tab10(0),
+        "padded photons v2": matplotlib.cm.tab10(0),
         "padded all v1": matplotlib.cm.tab10(1),
         "only mos all": matplotlib.cm.tab10(2),
         "only moe all": matplotlib.cm.tab10(5),

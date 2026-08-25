@@ -10,6 +10,7 @@ h5py>=3.10
 PyYAML
 k-diffusion
 showerdata
+pot>=0.7
 
 # ---- Dev / debug ----------------------------------------------------------
 ipdb
