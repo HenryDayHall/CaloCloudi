@@ -81,7 +81,7 @@ while True:
         print("No more models to process")
         break
     model_path = to_do.pop()
-    force = True
+    force = False
     print(f"Processing {model_path}")
     config = inference.Sampler.get_config_from_model_path(model_path)
     # raw model

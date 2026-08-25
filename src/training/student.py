@@ -122,11 +122,25 @@ def common(config):
     return setup_dict, validation_checker
 
 
-def init_from_scratch(config_path, teacher_model_path):
+def init_from_scratch(config_path, teacher_model_path, **logger_kwargs):
+    if "run_type" in logger_kwargs and logger_kwargs["run_type"] != "student":
+        raise ValueError("run_type must be 'student'")
+    logger_kwargs["run_type"] = "student"
+    run_info = logger_kwargs.get("run_info", {})
+    if (
+        "teacher_model_path" in run_info
+        and run_info["teacher_model_path"] != teacher_model_path
+    ):
+        raise ValueError(
+            f"run_info['teacher_model_path'] ({run_info['teacher_model_path']}) "
+            f"does not match teacher_model_path ({teacher_model_path})"
+        )
+    run_info["teacher_model_path"] = teacher_model_path
+    logger_kwargs["run_info"] = run_info
+
     logger = utils.Logger(
         config_path,
-        run_type="student",
-        run_info={"teacher_model_path": teacher_model_path},
+        **logger_kwargs,
     )
     config = logger.config
     setup_dict, validation_checker = common(config)

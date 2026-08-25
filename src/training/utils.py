@@ -11,6 +11,20 @@ from ..data.dataset import from_config as dataset_from_config
 from ..evaluation.model_kind import RUN_INFO_NAME, DISTILLED_ROLES
 
 
+def gen_throwaway_dir(output_or_config_path):
+    if output_or_config_path.endswith(".yaml"):
+        with open(output_or_config_path, "r") as f:
+            config = yaml.safe_load(f)
+        output_path = config["output_path"]
+    else:
+        output_path = output_or_config_path
+    random_number = np.random.randint(0, 100000)
+    my_dir = os.path.join(output_path, "test_logs", f"throwaway_{random_number}")
+    # very unlikely to collide, but we would want to know
+    os.makedirs(my_dir, exist_ok=False)
+    return my_dir
+
+
 class Logger:
     per_step_log = [
         "loss",
@@ -29,6 +43,7 @@ class Logger:
         chatty=True,
         run_type=None,
         run_info=None,
+        prespecified_log_dir=None,
     ):
         self.text = ""
         self.chatty = chatty
@@ -42,9 +57,17 @@ class Logger:
         self.validation_functions_dict = {}
         self.validation_values = {"n_events": []}
 
-        if existing_log_dir is None:
+        if prespecified_log_dir is not None:
+            self.log_dir = prespecified_log_dir
+            with open(os.path.join(self.log_dir, "config.yaml"), "w") as f:
+                yaml.dump(self.config, f)
+        elif existing_log_dir is None:
             self.log_dir = self.setup_dir()
         else:
+            if prespecified_log_dir is not None:
+                raise ValueError(
+                    "Cannot specify both existing_log_dir and prespecified_log_dir"
+                )
             self.log_dir = existing_log_dir
             self._load()
         self.checkpoint_dir = os.path.join(self.log_dir, "checkpoints")

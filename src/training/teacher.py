@@ -104,8 +104,11 @@ def common(config):
     return setup_dict, validation_checker
 
 
-def init_from_scratch(config_path):
-    logger = utils.Logger(config_path, run_type="teacher")
+def init_from_scratch(config_path, **logger_kwargs):
+    if "run_type" in logger_kwargs and logger_kwargs["run_type"] != "teacher":
+        raise ValueError("run_type must be 'teacher'")
+    logger_kwargs["run_type"] = "teacher"
+    logger = utils.Logger(config_path, **logger_kwargs)
     config = logger.config
     setup_dict, validation_checker = common(config)
     for name, function in validation_checker.callables.items():

@@ -8,7 +8,8 @@
 #SBATCH --output /data/dust/user/dayhallh/data/CaloClouds_diffusion/joblogs/%j_%a.out
 #SBATCH --error /data/dust/user/dayhallh/data/CaloClouds_diffusion/joblogs/%j_%a.err
 #SBATCH --constraint="GPUx1&A100-PCIE-80GB"
-#SBATCH --array=0-5
+#SBATCH --array=0-11
+
 
 module load maxwell mamba
 . mamba-init

@@ -176,6 +176,12 @@ class EMDCalculator(ReferenceBase):
         return this
 
 
+class SlicedWassersteinHL:
+    def __init__(self, model_summary):
+        pass
+
+
+
 def _cell_mask(cells):
     """Boolean mask selecting real (non-padding) cells based on positive energy."""
     return cells[:, :, 3] > 0
@@ -693,15 +699,14 @@ class ModelSummary(SingularsMixin):
                 # TODO should make this check for agreement between batches
                 energy_mask = physical_points[..., 3] > 0
                 mean_energy = np.mean(physical_points[energy_mask][..., 3])
-                print(self.config["output_path"])
-                print(f"Mean point energy: {mean_energy}")
+                self.printer(f"Mean point energy: {mean_energy}")
                 if mean_energy > 0.1:
                     # units issue with this dataset
                     physical_points[..., 3] *= 10 ** (-3)
-                    print("Warning, might be having an issue with energy units")
+                    self.printer("Warning, might be having an issue with energy units")
                 elif mean_energy < 0.000001:
                     physical_points[..., 3] *= 10 ** (3)
-                    print("Warning, might be having an issue with energy units")
+                    self.printer("Warning, might be having an issue with energy units")
             physical_points = inference.unshift_points(
                 physical_points, point_layer_ids, self.cond[start:end], self.config
             )
@@ -732,10 +737,14 @@ class ModelSummary(SingularsMixin):
         print(f"Mean cell energy: {mean_energy}")
         # TODO should make this check for agreement between batches
         if mean_energy > 0.001:
-            print("Warning, might be having a cell level issue with energy units")
+            self.printer(
+                "Warning, might be having a cell level issue with energy units"
+            )
             sample_cells[..., 3] *= 10 ** (-3)
         if mean_energy < 0.0000001:
-            print("Warning, might be having a a cell level issue with energy units")
+            self.printer(
+                "Warning, might be having a a cell level issue with energy units"
+            )
             sample_cells[..., 3] *= 10 ** (3)
         sample_singulars = self.calculate_singulars(self.cond, sample_cells)
         if output_path is not None:

@@ -13,6 +13,7 @@ import gc
 import os
 import yaml
 from ..data import read_write
+from ..training.utils import gen_throwaway_dir
 from ..training.teacher import init_from_scratch as init_teacher
 from ..training.student import init_from_scratch as init_student
 from ..evaluation.inference import evaluating, pdg_to_onehot_in_full_cond
@@ -100,8 +101,10 @@ def make_restrictions():
     torch.set_num_threads(1)
 
 
-def make_fake_teacher(config_path, out_path="temp.pt"):
-    setup = init_teacher(config_path)
+def make_fake_teacher(config_path):
+    throwaway_dir = gen_throwaway_dir(config_path)
+    out_path = os.path.join(throwaway_dir, "fake_teacher.pt")
+    setup = init_teacher(config_path, prespecified_log_dir=throwaway_dir)
     model = setup["model"]
     torch.save(model, out_path)
     return out_path
@@ -125,11 +128,14 @@ def time_python(
     not the conversion of the diffusion to physical coordinates and cells.
     """
     end_by = time.time() + time_allocated
+    throwaway_dir = gen_throwaway_dir(config_path)
     if version == "teacher":
-        setup = init_teacher(config_path)
+        setup = init_teacher(config_path, prespecified_log_dir=throwaway_dir)
     elif version == "student":
         fake_teacher_path = make_fake_teacher(config_path)
-        setup = init_student(config_path, fake_teacher_path)
+        setup = init_student(
+            config_path, fake_teacher_path, prespecified_log_dir=throwaway_dir
+        )
     else:
         raise ValueError(f"Unknown version {version}, should be teacher or student")
     cond = torch.from_numpy(cond).to(device, dtype=torch.float32)
@@ -209,7 +215,7 @@ def get_tag(config_path):
     if len(pottential_tag) > 0:
         return os.path.basename(pottential_tag[0])[3:]
     elif os.path.basename(config_path) != "config.yaml":
-        return os.path.basename(config_path)[:-len(".yaml")]
+        return os.path.basename(config_path)[: -len(".yaml")]
     else:
         return run_dir.rstrip("/").split("/")[-1]
 
