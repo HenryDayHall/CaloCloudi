@@ -1,9 +1,10 @@
 # ASAP
 - Why is the sliced wasserstein of photon only so much higher?
-
-
-# at some point in the future
+    * possible issue with columns not having the same scale.
 - Why does the EM data not load?
+- Can we make a combined dataset with also the CC3 training data.
+
+# At some point
 - Add comments that explain things to the config files from the old config files
 - Consider making a subdictionary for the diffusion parts of the model
 - Update the unit tests to meet the changes
