@@ -39,6 +39,7 @@ class ReferenceBase:
         pick_events=None,
         total_size=1_000,
         printer=print,
+        batch_size=None,
     ):
         self.config = config
         self.data_part = data_part
@@ -55,6 +56,8 @@ class ReferenceBase:
             np.savez(reference_path, **self.reference)
         self.cond = self.reference["cond"]
         self.printer(f"Have {len(self.cond)} reference events")
+        # batch_size=none means read everything at once
+        self.batch_size = batch_size
 
     def get_output_path(self):
         dataset_name = os.path.basename(self.config["data"]["dataset_path"])
@@ -930,10 +933,66 @@ class ReferenceSummary(ReferenceBase, SingularsMixin):
 
     # also need to implement calculate_reference
     def calculate_reference(self):
-        cond, cells = self.fetch_reference()
-        return self.calculate_singulars(cond, cells)
+        if self.batch_size is None:
+            cond, cells = self.fetch_reference()
+            return self.calculate_singulars(cond, cells)
+        return self._calculate_reference_batched()
+ 
+    def _resolve_pick_events(self):
+        """
+        Turn pick_events/total_size into an explicit, sorted array of event
+        indices, using the same rules as read_write.read_raw_regaxes.
+        """
+        n_events, _ = read_write.event_idxs_in_part(self.config, self.data_part)
+        n_total_events = int(np.sum(n_events))
+        if self.pick_events is None:
+            total_size = self.total_size
+            total_size = min(100 if total_size is None else total_size, n_total_events)
+            if total_size == -1:
+                return np.arange(n_total_events)
+            if total_size == 0:
+                return np.zeros(0, dtype=int)
+            return np.linspace(0, n_total_events - 1, max(total_size, 1)).astype(int)
+        if isinstance(self.pick_events, slice):
+            return np.arange(n_total_events)[self.pick_events]
+        pick_events = np.sort(np.asarray(self.pick_events, dtype=int))
+        assert (
+            np.max(pick_events, initial=0) < n_total_events
+        ), "Event index out of range in pick_events"
+        return pick_events
 
-    def fetch_reference(self):
+    def _calculate_reference_batched(self):
+        pick_events = self._resolve_pick_events()
+        n_picked = len(pick_events)
+        n_batches = int(np.ceil(n_picked / self.batch_size))
+        self.printer(
+            f"Summarising {n_picked} reference events in {n_batches} batches"
+        )
+        bins = {}
+        singulars = {}
+        for batch_n in range(n_batches):
+            start = batch_n * self.batch_size
+            end = min(start + self.batch_size, n_picked)
+            self.printer(f"Batch {batch_n + 1}/{n_batches}, events {start}:{end}")
+            cond, cells = self.fetch_reference(pick_events=pick_events[start:end])
+            new_singulars = self.calculate_singulars(cond, cells, bins=bins)
+            del cond, cells
+            for key, value in new_singulars.items():
+                singulars.setdefault(key, []).append(value)
+        combined = {}
+        for key, values in singulars.items():
+            if key.endswith("_edges"):
+                assert all(
+                    np.array_equal(values[0], v) for v in values
+                ), f"Bin edges for {key} changed between batches"
+                combined[key] = values[0]
+            else:
+                combined[key] = np.concatenate(values, axis=0)
+        return combined
+
+    def fetch_reference(self, pick_events=None):
+        if pick_events is None:
+            pick_events = self.pick_events
         cond_columns = [
             self.config["data"][f"{name}_key"]
             for name in self.config["model"]["cond_features"]
@@ -941,7 +1000,7 @@ class ReferenceSummary(ReferenceBase, SingularsMixin):
         cond, target = read_write.read_raw_regaxes(
             self.config,
             part=self.data_part,
-            pick_events=self.pick_events,
+            pick_events=pick_events,
             total_size=self.total_size,
             per_event_cols=cond_columns,
         )
@@ -968,6 +1027,7 @@ class ReferenceSummary(ReferenceBase, SingularsMixin):
         pick_events=None,
         total_size=1_000,
         printer=print,
+        batch_size=None,
     ):
         config = inference.Sampler.get_config_from_model_path(model_path)
         this = cls(
@@ -976,6 +1036,7 @@ class ReferenceSummary(ReferenceBase, SingularsMixin):
             pick_events=pick_events,
             total_size=total_size,
             printer=printer,
+            batch_size=batch_size,
         )
         return this
 
