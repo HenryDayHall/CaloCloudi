@@ -23,7 +23,12 @@ log_dir = "/data/dust/user/dayhallh/data/CaloClouds_diffusion/logs"
 
 run_dirs = []
 for tag in known_tags:
-    run_dir = glob.glob(os.path.join(log_dir, f"*/_a_{tag.replace(' ', '_')}"))[0]
+    path_shape = os.path.join(log_dir, f"*/_a_{tag.replace(' ', '_')}")
+    try:
+        run_dir = glob.glob(path_shape)[0]
+    except IndexError:
+        print(f"Could not find tag {tag}")
+        continue
     run_dirs.append(os.path.basename(run_dir))
 
 

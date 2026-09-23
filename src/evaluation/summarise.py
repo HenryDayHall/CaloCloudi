@@ -446,6 +446,14 @@ def radial_energy(cells, directions, bins=None):
     return counts, bin_edges
 
 
+def transverse_width(cells, directions):
+    distances = _radial_distances(cells, directions)
+    energies = cells[:, :, 3]
+    observed_energy = energies.sum(axis=1)
+    energy_weighted_distance = (distances * energies).sum(axis=1)
+    return np.sqrt(energy_weighted_distance / observed_energy)
+
+
 def layer_energies(cells, config):
     """
     Total energy deposited in each detector layer.
@@ -651,6 +659,16 @@ class SingularsMixin:
             floored_cells, directions, radial_energy_edges
         )
         assert radial_energy_counts.shape[1] == radial_energy_edges.shape[0] - 1
+
+        transverse_width_incident = transverse_width(floored_cells, directions)
+        singulars["transverse_width_incident"] = transverse_width_incident
+        transverse_width_pca = transverse_width(floored_cells, singulars["pca"])
+        singulars["transverse_width_pca"] = transverse_width_pca
+        transverse_width_pca_top4 = transverse_width(
+            floored_cells, singulars["pca_top4"]
+        )
+        singulars["transverse_width_pca_top4"] = transverse_width_pca_top4
+
         singulars["radial_energy"] = radial_energy_counts
         singulars["radial_energy_edges"] = radial_energy_edges
         radial_occ_edges = bins.get("radial_occ_edges", None)
