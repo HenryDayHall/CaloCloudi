@@ -46,6 +46,8 @@ class ReferenceBase:
         self.pick_events = pick_events
         self.total_size = total_size
         self.printer = printer
+        # batch_size=none means read everything at once
+        self.batch_size = batch_size
         reference_path = self.get_output_path()
         if os.path.exists(reference_path):
             self.printer(f"Loading precalculated reference from {reference_path}")
@@ -56,8 +58,6 @@ class ReferenceBase:
             np.savez(reference_path, **self.reference)
         self.cond = self.reference["cond"]
         self.printer(f"Have {len(self.cond)} reference events")
-        # batch_size=none means read everything at once
-        self.batch_size = batch_size
 
     def get_output_path(self):
         dataset_name = os.path.basename(self.config["data"]["dataset_path"])
@@ -453,7 +453,7 @@ def transverse_width(cells, directions):
     distances = _radial_distances(cells, directions)
     energies = cells[:, :, 3]
     observed_energy = energies.sum(axis=1)
-    energy_weighted_distance = (distances * energies).sum(axis=1)
+    energy_weighted_distance = (distances**2 * energies).sum(axis=1)
     return np.sqrt(energy_weighted_distance / observed_energy)
 
 
