@@ -25,7 +25,8 @@ with open(cond_file, "r") as f:
     config = yaml.safe_load(f)
 
 print(f"Loading data from {data_file}")
-n_events = 1000
+#n_events = 1000
+n_events = 56256
 with h5py.File(data_file, "r") as f:
     cc3_showers = np.array(f["caloclouds3_showers"][:n_events])
     energy = np.array(f["energy"])[:n_events, None]
